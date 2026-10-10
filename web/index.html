@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RAD Converter</title>
+  <meta name="description" content="Convert Gaussian splat files (.ply, .spz, .splat, .ksplat, .sog) to Spark's streamable RAD format, locally in your browser.">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='11' cy='13' r='7' fill='%23e8743b' opacity='.85'/%3E%3Cellipse cx='20' cy='19' rx='9' ry='6' fill='%233b82c4' opacity='.8'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="style.css">
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/",
+        "@sparkjsdev/spark": "https://cdn.jsdelivr.net/npm/@sparkjsdev/spark@2.3.1/dist/spark.module.js",
+        "fflate": "https://cdn.jsdelivr.net/npm/fflate@0.8.2/esm/browser.js"
+      }
+    }
+  </script>
+  <script type="module" src="app.js"></script>
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><circle cx="11" cy="13" r="7" fill="var(--accent)" opacity=".85"/><ellipse cx="20" cy="19" rx="9" ry="6" fill="var(--accent-2)" opacity=".8"/></svg>
+      <div>
+        <h1>RAD Converter</h1>
+        <p>Gaussian splats &rarr; Spark <code>.rad</code> with a prebuilt level-of-detail tree. Runs entirely in your browser; files never leave your machine.</p>
+      </div>
+    </div>
+  </header>
+
+  <main class="layout">
+    <section class="panel settings" aria-labelledby="settings-h">
+      <h2 id="settings-h">Settings</h2>
+
+      <fieldset class="field" id="save-field">
+        <legend>Save location</legend>
+        <div class="folder">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
+          <span id="folder-name">Ask where to save each file</span>
+        </div>
+        <div class="folder-actions">
+          <button type="button" class="btn" id="pick-folder">Choose output folder…</button>
+          <button type="button" class="btn" id="reconnect-folder" hidden>Allow access</button>
+          <button type="button" class="btn ghost" id="clear-folder" hidden>Clear</button>
+        </div>
+        <p class="hint" id="save-hint">With an output folder, converted files save there automatically. Otherwise use “Save as…” on each result to pick a location.</p>
+      </fieldset>
+
+      <fieldset class="field">
+        <legend>Level of detail</legend>
+        <div class="seg" role="radiogroup">
+          <label><input type="radio" name="lod" value="quality" checked><span>Quality</span></label>
+          <label><input type="radio" name="lod" value="quick"><span>Quick</span></label>
+          <label><input type="radio" name="lod" value="none"><span>None</span></label>
+        </div>
+        <p class="hint" data-hint-for="lod"></p>
+      </fieldset>
+
+      <fieldset class="field">
+        <legend>Output</legend>
+        <div class="seg" role="radiogroup">
+          <label><input type="radio" name="output" value="single" checked><span>Single .rad</span></label>
+          <label><input type="radio" name="output" value="chunked"><span>Chunked</span></label>
+        </div>
+        <p class="hint" data-hint-for="output"></p>
+      </fieldset>
+
+      <fieldset class="field">
+        <legend>Working precision</legend>
+        <div class="seg" role="radiogroup">
+          <label><input type="radio" name="precision" value="standard" checked><span>Standard</span></label>
+          <label><input type="radio" name="precision" value="compact"><span>Compact</span></label>
+        </div>
+        <p class="hint" data-hint-for="precision"></p>
+      </fieldset>
+
+      <label class="field row">
+        <span>Spherical harmonics</span>
+        <select name="maxSh">
+          <option value="">Keep all</option>
+          <option value="3">Up to degree 3</option>
+          <option value="2">Up to degree 2</option>
+          <option value="1">Up to degree 1</option>
+          <option value="0">None (degree 0)</option>
+        </select>
+      </label>
+
+      <details class="advanced">
+        <summary>Advanced</summary>
+
+        <label class="field row">
+          <span>LoD base <small>(1.1–16, blank = default)</small></span>
+          <input type="number" name="lodBase" min="1.1" max="16" step="0.05" placeholder="auto">
+        </label>
+
+        <label class="field row">
+          <span>Input format</span>
+          <select name="fileType">
+            <option value="">Auto-detect</option>
+            <option value="ply">PLY / compressed PLY</option>
+            <option value="spz">SPZ</option>
+            <option value="splat">.splat</option>
+            <option value="ksplat">.ksplat</option>
+            <option value="pcsogszip">SOG / SOGS zip</option>
+            <option value="rad">RAD</option>
+          </select>
+        </label>
+
+        <h3>Property encoding</h3>
+        <div class="enc-grid">
+          <label>Center<select name="enc.center"><option>Auto</option><option>F32</option><option>F16</option><option>F32LeBytes</option><option>F16LeBytes</option></select></label>
+          <label>Alpha<select name="enc.alpha"><option>Auto</option><option>F32</option><option>F16</option><option>R8</option></select></label>
+          <label>Color<select name="enc.rgb"><option>Auto</option><option>F32</option><option>F16</option><option>R8</option><option>R8Delta</option></select></label>
+          <label>Scales<select name="enc.scales"><option>Auto</option><option>F32</option><option>LnF16</option><option>Ln0R8</option></select></label>
+          <label>Rotation<select name="enc.orientation"><option>Auto</option><option>F32</option><option>F16</option><option>Oct88R8</option></select></label>
+          <label>SH<select name="enc.sh"><option>Auto</option><option>F32</option><option>F16</option><option>S8</option><option>S8Delta</option></select></label>
+        </div>
+        <p class="hint">Auto matches Spark's <code>build-lod</code>: f32 centers, 8-bit color/scales/rotation where the data range allows.</p>
+
+        <h3>Crop</h3>
+        <label class="field row"><span>Min corner <small>x,y,z</small></span><input type="text" name="minBox" placeholder="e.g. -10,-5,-10" inputmode="decimal"></label>
+        <label class="field row"><span>Max corner <small>x,y,z</small></span><input type="text" name="maxBox" placeholder="e.g. 10,5,10" inputmode="decimal"></label>
+        <label class="field row"><span>Sphere <small>x,y,z,r</small></span><input type="text" name="withinDist" placeholder="e.g. 0,0,0,25" inputmode="decimal"></label>
+
+        <label class="check"><input type="checkbox" name="inflate"> Inflate LoD splats to opacity &le; 1 <small>(for renderers without Spark's LoD opacity)</small></label>
+      </details>
+
+      <button type="button" class="link" id="reset-settings">Reset to defaults</button>
+    </section>
+
+    <section class="work">
+      <label class="drop" id="drop">
+        <input type="file" id="file-input" multiple accept=".ply,.spz,.splat,.ksplat,.sog,.zip,.rad">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m0 0-4.5 4.5M12 4l4.5 4.5M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <strong>Open Gaussian splat files</strong>
+        <span>Click to browse, or drop files here &middot; .ply &middot; .compressed.ply &middot; .spz &middot; .splat &middot; .ksplat &middot; .sog &middot; .zip &middot; .rad</span>
+      </label>
+
+      <div class="queue-head" id="queue-head" hidden>
+        <h2>Jobs</h2>
+        <button type="button" class="link" id="clear-done">Clear finished</button>
+      </div>
+      <ol class="queue" id="queue"></ol>
+
+      <p class="foot">
+        Uses <a href="https://github.com/sparkjsdev/spark" target="_blank" rel="noopener">Spark</a>'s own
+        decoders, LoD builders and RAD encoder (spark-lib, compiled to WebAssembly) &mdash; the same pipeline as its
+        <code>build-lod</code> CLI. Load the result with <code>new SplatMesh({ url: "scene-lod.rad" })</code>, or
+        <code>paged: true</code> to stream.
+      </p>
+    </section>
+  </main>
+
+  <template id="job-tpl">
+    <li class="job">
+      <div class="job-top">
+        <div class="job-name"><span class="name"></span><span class="meta"></span></div>
+        <span class="chip"></span>
+      </div>
+      <div class="bar"><div class="fill"></div></div>
+      <div class="stage"></div>
+      <dl class="stats" hidden></dl>
+      <div class="error" hidden></div>
+      <div class="saved" hidden></div>
+      <div class="actions">
+        <button type="button" class="btn primary save" hidden>Save as…</button>
+        <button type="button" class="btn download" hidden>Download</button>
+        <button type="button" class="btn preview" hidden>Preview</button>
+        <button type="button" class="btn cancel">Cancel</button>
+        <button type="button" class="btn ghost log-toggle">Log</button>
+      </div>
+      <pre class="log" hidden></pre>
+    </li>
+  </template>
+
+  <dialog id="viewer">
+    <div class="viewer-bar">
+      <strong id="viewer-title"></strong>
+      <span id="viewer-status"></span>
+      <span class="spacer"></span>
+      <button type="button" class="btn" id="viewer-flip" title="Rotate 180° about X (many captures are Y-down)">Flip</button>
+      <button type="button" class="btn" id="viewer-close">Close</button>
+    </div>
+    <div id="viewer-canvas"></div>
+    <p class="viewer-hint">Drag to orbit &middot; right-drag to pan &middot; scroll to zoom</p>
+  </dialog>
+</body>
+</html>
