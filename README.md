@@ -18,8 +18,11 @@ Web Worker via WebAssembly, so files are never uploaded.
    - **Choose output folder…** saves every converted file there automatically and never overwrites
      an existing file (a second copy becomes `scene-lod (2).rad`). The folder is remembered between
      visits; after a reload the browser may ask you to **Allow access** again.
-   - Without a folder, click **Save as…** on a finished result to pick the location and file name
-     in the system dialog.
+   - Without a folder, click **Save to folder…** on a finished result to pick where it goes.
+   - **Every save includes a log**, e.g. `trogir-lod.log.txt` next to `trogir-lod.rad`, also inside
+     chunked folders and zips. Its header records the input file and type, the output, the engine
+     (and exact `build-lod` command for native jobs) and every setting. The full conversion log
+     follows, for later evaluation.
    - Chunked results are written as a subfolder, `scene-lod/`, holding the `.rad` header and its
      `.radc` chunks.
 

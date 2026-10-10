@@ -127,6 +127,81 @@ const fmtBytes = (b) => {
 const fmtCount = (n) => n.toLocaleString();
 const fmtTime = (ms) => (ms < 1000 ? `${Math.round(ms)} ms` : ms < 60000 ? `${(ms / 1000).toFixed(1)} s` : `${Math.floor(ms / 60000)}m ${Math.round((ms % 60000) / 1000)}s`);
 
+const FORMAT_NAMES = { ply: "PLY", spz: "SPZ", splat: "SPLAT", ksplat: "KSPLAT", pcsogszip: "SOG", rad: "RAD" };
+const formatName = (type) => FORMAT_NAMES[type] ?? String(type ?? "?").toUpperCase();
+
+function logFileName(radName) {
+  return `${radName.replace(/\.rad$/i, "")}.log.txt`;
+}
+
+function describeSettings(s) {
+  const p = s.process;
+  const crop = [
+    p.minBox && `min corner ${p.minBox.join(", ")}`,
+    p.maxBox && `max corner ${p.maxBox.join(", ")}`,
+    p.withinDist && `sphere center ${p.withinDist.slice(0, 3).join(", ")}, radius ${p.withinDist[3]}`,
+  ].filter(Boolean);
+  const encodings = Object.entries(s.encode).map(([k, v]) => `${k} ${v || "Auto"}`).join(", ");
+  return [
+    ["Level of detail", { quality: "Quality (bhatt-lod)", quick: "Quick (tiny-lod)", none: "None" }[p.lod]],
+    ["LoD base", p.lod === "none" ? "n/a" : p.lodBase != null ? String(p.lodBase) : `default (${p.lod === "quick" ? 1.5 : 1.75})`],
+    ["Output", s.chunked ? "Chunked (.rad header + .radc chunks)" : "Single .rad"],
+    ["Working precision", s.compact ? "Compact (csplat)" : "Standard (gsplat)"],
+    ["Spherical harmonics", p.maxSh == null ? "Keep all" : `Up to degree ${p.maxSh}`],
+    ["Engine", s.engine === "native" ? "Native" : "Browser"],
+    ["Low-memory mode", s.engine === "native" ? "n/a (native engine)" : s.repack || "auto"],
+    ["Input format", s.fileType ? `Forced: ${s.fileType}` : "Auto-detect"],
+    ["Property encodings", s.engine === "native" ? "Auto (native engine)" : encodings],
+    ["Crop", crop.length ? crop.join("; ") : "none"],
+    ["Inflate", p.inflate ? "on" : "off"],
+  ];
+}
+
+// Plain-text record of a conversion: what went in, how, and what came out,
+// followed by the full log. Saved next to the .rad for later evaluation.
+function buildLogText(job, savedRadName) {
+  const { settings, input = {}, processed = {}, result } = job;
+  const sparkRev = (native.manifest?.sparkRev ?? "c57ebb936a5d").slice(0, 7);
+  const outBytes = result.files.reduce((n, f) => n + f.size, 0);
+  const when = job.finishedAt ?? new Date();
+  const native_ = settings.engine === "native";
+  const row = ([k, v]) => `${(k + ":").padEnd(21)}${v}`;
+  const header = [
+    ["Output", `${savedRadName}${result.files.length > 1 ? ` + ${result.files.length - 1} .radc chunk files` : ""} · ${fmtBytes(outBytes)}`],
+    ["Converted", `${when.toLocaleString()} (${when.toISOString()})`],
+    ["Input file", `${job.file.name} · ${fmtBytes(job.file.size)}`],
+    ["Input type", `${formatName(input.fileType)} · ${fmtCount(input.splatCount ?? 0)} splats · SH degree ${input.shDegree ?? "?"}`],
+    ["Output splats", `${fmtCount(processed.splatCount ?? 0)}${processed.hasLod ? " (incl. LoD tree)" : ""} · SH degree ${processed.shDegree ?? "?"}`],
+    ["Engine", native_
+      ? `Native: Spark build-lod ${native.manifest?.tag ?? ""} (sparkjsdev/spark@${sparkRev})`.replace("  ", " ")
+      : `Browser: spark-lib WebAssembly (sparkjsdev/spark@${sparkRev})`],
+    ...(native_ ? [["Command", `build-lod ${buildLodFlags(settings).join(" ")} "${job.file.name}"`]] : []),
+    ["Duration", fmtTime(result.timings.total)],
+  ];
+  const title = "RAD Converter conversion log";
+  return [
+    title,
+    "=".repeat(title.length),
+    ...header.map(row),
+    "",
+    "Settings",
+    "--------",
+    ...describeSettings(settings).map(row),
+    ...(result.encoding ? [row(["Resolved encoding", JSON.stringify(result.encoding)])] : []),
+    "",
+    "Log",
+    "---",
+    ...job.log,
+    "",
+  ].join("\n");
+}
+
+function logFile(job, savedRadName) {
+  const name = logFileName(savedRadName);
+  const bytes = new TextEncoder().encode(buildLogText(job, savedRadName).replace(/\n/g, "\r\n"));
+  return { name, size: bytes.byteLength, bytes };
+}
+
 function baseName(name) {
   let n = name.replace(/\.(compressed\.ply|ply|spz|splat|ksplat|sog|zip|rad)$/i, "");
   return n.replace(/-lod$/i, "");
@@ -431,6 +506,7 @@ function complete(job, data) {
   const files = data.files;
   const radName = files[0].name;
   job.result = { files, radName, base: radName.replace(/\.rad$/i, ""), encoding: data.encoding, timings: data.timings };
+  job.finishedAt = new Date();
   const outBytes = files.reduce((n, f) => n + f.size, 0);
 
   setState(job, "done");
@@ -442,7 +518,7 @@ function complete(job, data) {
   const p = job.processed, inp = job.input;
   const ratio = outBytes / job.file.size;
   const rows = [
-    ["Input", `${inp.fileType.toUpperCase()} · ${fmtCount(inp.splatCount)}`],
+    ["Input", `${formatName(inp.fileType)} · ${fmtCount(inp.splatCount)}`],
     ["Output splats", `${fmtCount(p.splatCount)}${p.hasLod ? " (incl. LoD)" : ""}`],
     ["SH degree", `${p.shDegree}`],
     ["Size", `${fmtBytes(job.file.size)} → ${fmtBytes(outBytes)}`],
@@ -507,6 +583,8 @@ async function downloadJob(job) {
     } else {
       download(new Blob([files[0].bytes], { type: "application/octet-stream" }), radName);
     }
+    const log = logFile(job, radName);
+    setTimeout(() => download(new Blob([log.bytes], { type: "text/plain" }), log.name), 400);
     return;
   }
   job.ui.download.disabled = true;
@@ -515,6 +593,8 @@ async function downloadJob(job) {
     const entries = {};
     // Chunks are already deflate-compressed per property; store without recompressing.
     for (const f of files) entries[f.name] = [await fileBytes(f), { level: 0 }];
+    const log = logFile(job, radName);
+    entries[log.name] = log.bytes;
     download(new Blob([zipSync(entries)], { type: "application/zip" }), `${base}-rad.zip`);
   } finally {
     job.ui.download.disabled = false;
@@ -683,7 +763,18 @@ async function writeChunked(dir, job) {
   const { files, base } = job.result;
   const sub = await dir.getDirectoryHandle(await freeName(dir, base, "dir"), { create: true });
   for (const f of files) await writeFile(sub, f.name, f);
-  return `${dir.name}/${sub.name}/ (${files.length} files)`;
+  const log = logFile(job, job.result.radName);
+  await writeFile(sub, log.name, log);
+  return `${dir.name}/${sub.name}/ (${files.length} files + log)`;
+}
+
+// Single .rad plus its log, never overwriting existing files.
+async function writeSingle(dir, job) {
+  const name = await freeName(dir, job.result.radName, "file");
+  await writeFile(dir, name, job.result.files[0]);
+  const log = logFile(job, name);
+  await writeFile(dir, await freeName(dir, log.name, "file"), log);
+  return `${dir.name}/${name} (+ ${log.name})`;
 }
 
 function showSaved(job, text, isError = false) {
@@ -696,38 +787,21 @@ function showSaved(job, text, isError = false) {
 async function autoSave(job) {
   try {
     await ensureWritable(outDir);
-    if (job.result.files.length > 1) {
-      job.savedTo = await writeChunked(outDir, job);
-    } else {
-      const name = await freeName(outDir, job.result.radName, "file");
-      await writeFile(outDir, name, job.result.files[0]);
-      job.savedTo = `${outDir.name}/${name}`;
-    }
+    job.savedTo = job.result.files.length > 1 ? await writeChunked(outDir, job) : await writeSingle(outDir, job);
     showSaved(job, `Saved to ${job.savedTo}`);
   } catch (err) {
     if (isBlocked(err)) fallBackToDownload(job, err);
-    else showSaved(job, `Couldn't save to ${outDir?.name}: ${err.message}. Use “Save as…” or Download instead.`, true);
+    else showSaved(job, `Couldn't save to ${outDir?.name}: ${err.message}. Use “Save to folder…” or Download instead.`, true);
   }
 }
 
+// "Save to folder…": a folder dialog rather than a save-file dialog, because a
+// file dialog only grants access to that one file and the log goes next to it.
 async function saveJobAs(job) {
-  const { files, radName } = job.result;
   try {
-    if (files.length > 1) {
-      const dir = await window.showDirectoryPicker({ id: "rad-output", mode: "readwrite", startIn: outDir ?? "downloads" });
-      await ensureWritable(dir);
-      job.savedTo = await writeChunked(dir, job);
-    } else {
-      const fh = await window.showSaveFilePicker({
-        id: "rad-save",
-        suggestedName: radName,
-        startIn: outDir ?? "downloads",
-        types: [{ description: "Spark RAD splats", accept: { "application/octet-stream": [".rad"] } }],
-      });
-      await ensureWritable(fh);
-      await writeResult(await fh.createWritable(), files[0]);
-      job.savedTo = fh.name;
-    }
+    const dir = await window.showDirectoryPicker({ id: "rad-output", mode: "readwrite", startIn: outDir ?? "downloads" });
+    await ensureWritable(dir);
+    job.savedTo = job.result.files.length > 1 ? await writeChunked(dir, job) : await writeSingle(dir, job);
     showSaved(job, `Saved to ${job.savedTo}`);
   } catch (err) {
     if (err.name === "AbortError") return; // user closed the dialog
