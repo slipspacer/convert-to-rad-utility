@@ -3,6 +3,17 @@
 import init, { RadConverter } from "./pkg/rad_wasm.js";
 
 const ready = init();
+let wasmExports = null;
+ready.then((exports) => { wasmExports = exports; });
+
+// WASM linear memory only grows, so its current size is the job's peak usage.
+const memoryMB = () => (wasmExports ? wasmExports.memory.buffer.byteLength / 2 ** 20 : 0);
+const MEMORY_LIMIT_MB = 4096;
+// Measured peak MB per million input splats (SH0 scene), by precision/LoD.
+const MB_PER_MILLION = {
+  "standard/quality": 255, "standard/quick": 235,
+  "compact/quality": 230, "compact/quick": 180,
+};
 
 const post = (msg, transfer) => self.postMessage(msg, transfer ?? []);
 
@@ -43,6 +54,18 @@ self.onmessage = async (event) => {
     const input = conv.finish();
     timings.decode = performance.now() - t0;
     post({ type: "input", input });
+    post({ type: "log", line: `Memory after decode: ${memoryMB().toFixed(0)} MB of ${MEMORY_LIMIT_MB} MB` });
+    const perMillion = MB_PER_MILLION[`${settings.compact ? "compact" : "standard"}/${settings.process.lod}`];
+    if (perMillion) {
+      const estimate = (input.splatCount / 1e6) * perMillion + file.size / 2 ** 20;
+      if (estimate > MEMORY_LIMIT_MB * 0.9) {
+        post({
+          type: "warning",
+          message: `Large scene: ${(input.splatCount / 1e6).toFixed(1)}M splats needs roughly ${(estimate / 1024).toFixed(1)} GB with these settings, ` +
+            `near or over the browser's 4 GB limit. It may run out of memory; Compact + Quick uses the least.`,
+        });
+      }
+    }
 
     stage = "lod";
     post({ type: "stage", stage, progress: settings.process.lod === "none" ? 1 : 0 });
@@ -57,6 +80,7 @@ self.onmessage = async (event) => {
     const processed = conv.process(settings.process, log);
     timings.lod = performance.now() - t1;
     post({ type: "processed", processed });
+    post({ type: "log", line: `Memory after LoD: ${memoryMB().toFixed(0)} MB of ${MEMORY_LIMIT_MB} MB` });
 
     stage = "encode";
     post({ type: "stage", stage, progress: null });
@@ -67,6 +91,7 @@ self.onmessage = async (event) => {
     const encodeOptions = { ...settings.encode, chunkPrefix: settings.chunked ? `${outBase}-` : undefined };
     const result = conv.encode(encodeOptions, log);
     conv.free();
+    post({ type: "log", line: `Peak memory: ${memoryMB().toFixed(0)} MB of ${MEMORY_LIMIT_MB} MB` });
     timings.encode = performance.now() - t2;
     timings.total = performance.now() - t0;
 
@@ -75,8 +100,18 @@ self.onmessage = async (event) => {
   } catch (err) {
     let message = err?.message ?? String(err);
     if (err instanceof WebAssembly.RuntimeError) {
-      message = lastPanic ?? message;
-      if (/memory|alloc/i.test(message)) message += " (the scene may be too large for browser memory; try Compact precision or a lower SH degree)";
+      // A failed allocation aborts without a panic message (Rust's OOM report
+      // goes to stderr, which doesn't exist here), leaving a bare "unreachable".
+      const mb = memoryMB();
+      if (lastPanic == null || /memory|alloc|capacity/i.test(lastPanic)) {
+        message =
+          `Out of memory: used ${mb.toFixed(0)} MB of the browser's ${MEMORY_LIMIT_MB} MB WebAssembly limit ` +
+          `during ${stage === "lod" ? "LoD building" : stage}. Try Working precision: Compact and Level of detail: Quick, ` +
+          `crop the scene (Advanced), or use Spark's native build-lod tool. Scenes much above ~15M splats ` +
+          `usually don't fit in browser memory.`;
+      } else {
+        message = lastPanic;
+      }
     }
     post({ type: "error", stage, message });
   }

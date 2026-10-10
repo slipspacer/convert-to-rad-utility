@@ -245,6 +245,12 @@ function runJob(job) {
           break;
         }
         case "processed": job.processed = data.processed; break;
+        case "warning":
+          appendLog(job, `WARNING: ${data.message}`);
+          job.ui.error.hidden = false;
+          job.ui.error.style.color = "var(--accent)";
+          job.ui.error.textContent = data.message;
+          break;
         case "done": complete(job, data); finish(); break;
         case "error": fail(job, data.message); finish(); break;
       }
@@ -259,6 +265,7 @@ function fail(job, message) {
   job.ui.fill.style.width = "100%";
   job.ui.stage.textContent = "";
   job.ui.error.hidden = false;
+  job.ui.error.style.color = "";
   job.ui.error.textContent = message;
   appendLog(job, `ERROR: ${message}`);
 }
@@ -286,6 +293,7 @@ function complete(job, data) {
   const outBytes = files.reduce((n, f) => n + f.bytes.byteLength, 0);
 
   setState(job, "done");
+  ui.error.hidden = true; // clear any large-scene warning
   ui.bar.classList.remove("indet");
   ui.fill.style.width = "100%";
   ui.stage.textContent = `${files.length > 1 ? `${radName} + ${files.length - 1} chunk files` : radName}`;
