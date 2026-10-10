@@ -31,7 +31,10 @@ browsers). Firefox and Safari fall back to normal downloads, with chunked output
 `web/pkg` ships prebuilt, so you only need a static server (module workers don't run from `file://`):
 
 ```bash
+# Windows
 py -m http.server 8090 -d web
+# macOS / Linux
+python3 -m http.server 8090 -d web
 ```
 
 Then open http://localhost:8090. Any static host works (GitHub Pages, Netlify, S3…).
