@@ -31,7 +31,7 @@ import time
 import urllib.request
 import uuid
 from pathlib import Path
-from urllib.parse import parse_qs, quote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 ROOT = Path(__file__).resolve().parent
 WEB = ROOT / "web"
@@ -312,7 +312,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         return job is not None and token == job.token
 
     def route(self):
-        parts = urlparse(self.path).path.strip("/").split("/")
+        # Split first, then decode each segment, so names with spaces or other
+        # escaped characters ("Artist%20Journey-lod.rad") match the files on disk.
+        parts = [unquote(p) for p in urlparse(self.path).path.strip("/").split("/")]
         if parts[:2] != ["api", "native"]:
             return None
         return parts[2:]
