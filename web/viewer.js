@@ -31,6 +31,7 @@ async function getView() {
     }
   });
   applyDetail();
+  applySpeed();
   return view;
 }
 
@@ -158,6 +159,15 @@ async function openUrl(raw) {
   }
 }
 
+function applySpeed() {
+  const v = Number($("#v-speed").value);
+  const mult = 2 ** v;
+  $("#v-speed-out").textContent = `${Number(mult.toFixed(2))}×`;
+  prefs.speed = v;
+  savePrefs();
+  view?.setFlySpeed(mult);
+}
+
 function applyDetail() {
   const v = Number($("#v-detail").value);
   const scale = 2 ** v;
@@ -177,12 +187,23 @@ $("#v-url-form").addEventListener("submit", (e) => {
 });
 $("#v-frame").addEventListener("click", () => view && focus(objects));
 $("#v-detail").addEventListener("input", applyDetail);
+$("#v-speed").value = prefs.speed ?? 0;
+$("#v-speed").addEventListener("input", applySpeed);
+// "-" / "=" step the fly speed while flying (Spark's FpsMovement ignores these keys).
+window.addEventListener("keydown", (e) => {
+  if (view?.mode !== "fly" || e.target.closest?.("input, textarea")) return;
+  if (e.key !== "-" && e.key !== "=" && e.key !== "+") return;
+  const s = $("#v-speed");
+  s.value = Math.min(Number(s.max), Math.max(Number(s.min), Number(s.value) + (e.key === "-" ? -0.5 : 0.5)));
+  applySpeed();
+});
 for (const r of document.querySelectorAll("input[name=v-mode]")) {
   r.addEventListener("change", async () => {
     const v = await getView();
     v.setMode(r.value);
+    $("#v-speed-wrap").hidden = r.value !== "fly";
     $("#v-hint").textContent = r.value === "fly"
-      ? "WASD to move · E/Q up/down · drag to look · Shift faster · Ctrl slower"
+      ? "WASD to move · E/Q up/down · drag to look · Shift faster · Ctrl slower · - / = speed"
       : "Drag to orbit · right-drag to pan · scroll to zoom";
   });
 }

@@ -22,6 +22,12 @@ export async function createSplatView(host) {
   let fly = null;
   let mode = "orbit";
   let sceneRadius = 1;
+  // Fly speed: 5% of the framed scene's radius per second, times a user
+  // multiplier (Shift x5 and Ctrl slow-down come from Spark's FpsMovement).
+  let flySpeed = 1;
+  const applyFlySpeed = () => {
+    if (fly) fly.fpsMovement.moveSpeed = Math.max(1e-3, sceneRadius * 0.05 * flySpeed);
+  };
 
   const resize = () => {
     const { clientWidth: w, clientHeight: h } = host;
@@ -43,7 +49,7 @@ export async function createSplatView(host) {
       mode = next;
       if (mode === "fly") {
         fly ??= new spark.SparkControls({ canvas: renderer.domElement });
-        fly.fpsMovement.moveSpeed = Math.max(0.1, sceneRadius * 0.4);
+        applyFlySpeed();
         fly.lastTime = 0;
         orbit.enabled = false;
       } else {
@@ -68,7 +74,13 @@ export async function createSplatView(host) {
       camera.updateProjectionMatrix();
       orbit.target.copy(center);
       orbit.update();
-      if (fly) fly.fpsMovement.moveSpeed = Math.max(0.1, sceneRadius * 0.4);
+      applyFlySpeed();
+    },
+
+    /** Multiplier on the default fly speed (1 = 5% of the scene radius per second). */
+    setFlySpeed(multiplier) {
+      flySpeed = multiplier;
+      applyFlySpeed();
     },
 
     start(onFrame) {

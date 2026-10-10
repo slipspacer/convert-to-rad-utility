@@ -42,6 +42,9 @@
         <label><input type="radio" name="v-mode" value="orbit" checked><span>Orbit</span></label>
         <label><input type="radio" name="v-mode" value="fly"><span>Fly</span></label>
       </div>
+      <label class="vdetail vspeed" id="v-speed-wrap" hidden title="Fly speed (keys: - slower, = faster)">
+        Speed <input type="range" id="v-speed" min="-4" max="3" step="0.5" value="0"> <output id="v-speed-out">1×</output>
+      </label>
       <button type="button" class="btn" id="v-frame">Frame all</button>
       <label class="vdetail" title="Splat budget multiplier for LoD objects (SparkRenderer.lodSplatScale)">
         Detail <input type="range" id="v-detail" min="-2" max="2" step="0.25" value="0"> <output id="v-detail-out">1×</output>
