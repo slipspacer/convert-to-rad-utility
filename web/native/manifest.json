@@ -6,11 +6,11 @@
   "assets": {
     "windows-x64": {
       "url": "https://github.com/slipspacer/convert-to-rad-utility/releases/download/build-lod-c57ebb9/build-lod-windows-x64.exe",
-      "sha256": ""
+      "sha256": "e31acd844c42c806f9df5b98c438b9d41f72e8de50d44a297545e46329435477"
     },
     "macos-universal": {
       "url": "https://github.com/slipspacer/convert-to-rad-utility/releases/download/build-lod-c57ebb9/build-lod-macos-universal",
-      "sha256": ""
+      "sha256": "f12de9c282bdf0a751472299656b7a6916e878ae916db02dbea917d71ef27da3"
     }
   }
 }
