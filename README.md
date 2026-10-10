@@ -144,6 +144,43 @@ checking results:
   very large files use a lot of browser memory. Streaming from a URL needs Range support, which
   `serve.py` doesn't have, so stream from a real host.
 
+### Performance evaluation
+
+There are two checks, available both after converting and when loading in the Viewer.
+
+**File check (instant).** It reads the header plus up to 24 chunks spread through the file, from
+memory or via Range requests. It reports:
+- **Splat counts:** scene splats versus the LoD tree's merged parent splats.
+- **LoD:** whether the file has an LoD tree.
+- **SH degree.**
+- **Nearly invisible splats:** the share under 5% opacity.
+- **Large splats:** the share bigger than 1% of the scene.
+
+Findings come with plain-language fixes. In the converter it appears on the job card and in the
+saved `.log.txt`. In the Viewer it's the **File check** button on each object.
+
+**Measure (about 20 seconds, on your device).** This is in the Viewer's Performance panel and in
+the converter's Preview. It times a fixed camera tour: 6 views from outside the scene and 6
+looking around from its centre. It reports average fps, typical dips and splats drawn, and
+compares them with your display's refresh rate. It then re-times the slowest view at half
+resolution to find the bottleneck:
+- **Pixels (overdraw):** splats are large on screen and stack up. Lower **Resolution** (75% or 50%)
+  helps most.
+- **Splat count:** lower **Detail** (the LoD splat budget) helps most.
+
+What actually drives speed, measured on the test set at 1920×1080: with LoD, Spark draws about
+2.5M splats per frame regardless of file size. The difference between scenes is how much screen
+those splats cover from the camera.
+
+| Scene | Outside | Inside | Note |
+|---|---|---|---|
+| trogir (SH 0, 33.7M splats) | 215 fps | 179 fps | Tiny on-screen splats |
+| LostPlace (SH 3, 7.2M splats) | 76 fps | 92 fps | Overdraw-bound: 72 → 180 fps at half resolution |
+
+**SH degree 3 didn't change LostPlace's frame rate** (76/92 with SH off as well). SH mainly costs
+file size and memory. Results depend on window size and GPU, so always measure on the target
+device and window size.
+
 ### Scenes with several splat files (including mixed SOG + RAD)
 
 A scene can hold any number of splat files, and formats can be mixed. Each file is its own

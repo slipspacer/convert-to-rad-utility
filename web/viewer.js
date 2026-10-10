@@ -1,6 +1,7 @@
 // RAD Viewer: drop local splat files (or stream a .rad from a URL) into one
 // Spark scene, the way a site using Spark would load them.
-import { createSplatView, meshBounds, meshSplatCount, worldBox, setFlipped } from "./splat-view.js";
+import { createSplatView, meshBounds, meshSplatCount, worldBox, setFlipped, benchmark } from "./splat-view.js";
+import { radReport } from "./rad-report.js";
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const STORE = "rad-viewer.prefs.v1";
@@ -12,7 +13,9 @@ const prefs = (() => {
 })();
 const savePrefs = () => { try { localStorage.setItem(STORE, JSON.stringify(prefs)); } catch {} };
 
-const objects = []; // { id, name, mesh, box, flipped, visible, el, splats, source }
+const objects = []; // { id, name, mesh, box, flipped, visible, el, splats, report }
+// Handle for debugging from the browser console: radViewer.view, radViewer.objects
+window.radViewer = { objects, get view() { return view; } };
 let view = null;
 let nextId = 1;
 
@@ -32,6 +35,7 @@ async function getView() {
   });
   applyDetail();
   applySpeed();
+  view.setRenderScale(Number($("#v-res").value));
   return view;
 }
 
@@ -44,6 +48,7 @@ function updateStats(fps) {
 }
 
 function renderList() {
+  $("#v-measure").disabled = !objects.some((o) => o.box);
   $("#v-list-empty").hidden = objects.length > 0;
   $("#v-empty").hidden = objects.length > 0;
   updateStats();
@@ -77,6 +82,10 @@ function addItem(name) {
     focus([obj]);
   });
   $(".vfocus", el).addEventListener("click", () => focus([obj]));
+  $(".vrep", el).addEventListener("click", () => {
+    const box = $(".vreport", el);
+    box.hidden = !box.hidden;
+  });
   objects.push(obj);
   renderList();
   return obj;
@@ -115,7 +124,7 @@ async function addMesh(obj, options, describe) {
     obj.box = await meshBounds(v, mesh);
     // Frame the first object automatically; later ones join the scene as-is.
     if (objects.filter((o) => o.box).length === 1) focus([obj]);
-    updateStats();
+    renderList();
   } catch (err) {
     console.error(err);
     setMeta(obj, `Couldn't load: ${err.message ?? err}`, true);
@@ -131,6 +140,7 @@ async function openFiles(files) {
     const bytes = new Uint8Array(await file.arrayBuffer());
     setMeta(obj, buildLod ? "Decoding and building LoD…" : "Decoding…");
     const ext = (file.name.match(/\.([a-z0-9]+)$/i)?.[1] ?? "?").toUpperCase();
+    if (isRad) showReport(obj, radReport({ bytes }));
     await addMesh(obj, { fileBytes: bytes, fileName: file.name, ...(buildLod ? { lod: true } : {}) }, (mesh) => {
       const lod = mesh.packedSplats?.lodSplats || mesh.extSplats?.lodSplats;
       return `${ext} · ${fmtCount(obj.splats)} splats · ${fmtBytes(file.size)}${lod ? " · LoD" : " · no LoD (renders every splat)"}`;
@@ -151,11 +161,95 @@ async function openUrl(raw) {
   const obj = addItem(name);
   const isRad = /\.rad(\?|#|$)/i.test(url);
   setMeta(obj, isRad ? "Fetching header…" : "Downloading…");
+  if (isRad) showReport(obj, radReport({ url }));
   await addMesh(obj, { url, ...(isRad ? { paged: true } : {}) }, () =>
     isRad ? `Streaming (paged) · ${fmtCount(obj.splats)} splats · LoD` : `${fmtCount(obj.splats)} splats (full download)`,
   );
   if (isRad && obj.mesh && !obj.box && $(".vmeta", obj.el).classList.contains("err") === false) {
     setMeta(obj, `${$(".vmeta", obj.el).textContent} · couldn't measure bounds, use Fly or Frame`);
+  }
+}
+
+// ---------- file check (static) ----------
+
+const LEVEL_LABEL = { high: "Will be slow", medium: "Heavier than needed", good: "Nothing heavy found" };
+
+async function showReport(obj, promise) {
+  const btn = $(".vrep", obj.el);
+  const box = $(".vreport", obj.el);
+  try {
+    const report = await promise;
+    obj.report = report;
+    btn.hidden = false;
+    btn.textContent = `File check: ${LEVEL_LABEL[report.level]}`;
+    btn.dataset.level = report.level;
+    box.replaceChildren(...report.findings.map((f) => {
+      const p = document.createElement("p");
+      p.className = `finding ${f.level}`;
+      p.innerHTML = "<strong></strong> <span></span>";
+      p.firstChild.textContent = f.title;
+      p.lastChild.textContent = f.detail;
+      return p;
+    }));
+  } catch (err) {
+    console.warn("File check failed", err);
+  }
+}
+
+// ---------- benchmark (runtime) ----------
+
+// Smooth needs a good average AND steady frames: "worst" is the 1-in-20
+// slowest frame, and dips are what make navigation feel sluggish.
+function rate(g, target) {
+  if (g.fps >= target * 0.9 && g.worst >= target * 0.75) return { level: "good", label: "Smooth" };
+  if (g.fps >= 30 && g.worst >= 20) return { level: "medium", label: "Some stutter" };
+  return { level: "high", label: "Sluggish" };
+}
+
+async function runBenchmark() {
+  const shown = objects.filter((o) => o.visible && o.mesh && o.box);
+  if (!shown.length) return;
+  const btn = $("#v-measure");
+  const out = $("#v-perf-out");
+  btn.disabled = true;
+  const box = new view.THREE.Box3();
+  for (const o of shown) box.union(worldBox(view, o.mesh, o.box));
+  const detail = view.sparkRenderer.lodSplatScale;
+  try {
+    const r = await benchmark(view, box, {
+      meshes: objects.filter((o) => o.mesh).map((o) => o.mesh),
+      onStep: (text, p) => { out.textContent = `${text}${p ? ` · ${Math.round(p * 100)}%` : ""}…`; },
+    });
+    const target = Math.min(60, r.refresh);
+    const rows = [["Outside", r.outside], ["Inside", r.inside]].map(([name, g]) => ({ name, g, rating: rate(g, target) }));
+    const worst = rows.reduce((a, b) => (a.g.fps < b.g.fps ? a : b));
+    const lines = [];
+    lines.push(`<table class="perf-table"><thead><tr><th></th><th>fps</th><th>dips</th><th>splats drawn</th><th></th></tr></thead><tbody>${
+      rows.map(({ name, g, rating }) => `<tr><td>${name}</td><td>${g.fps.toFixed(0)}</td><td>${g.worst.toFixed(0)}</td><td>${(g.splats / 1e6).toFixed(2)}M</td><td><span class="pill ${rating.level}">${rating.label}</span></td></tr>`).join("")
+    }</tbody></table>`);
+    const canvas = view.renderer.domElement;
+    lines.push(`<p class="hint">Rendered ${canvas.width}×${canvas.height} px (Resolution ${Math.round(view.renderScale * 100)}%) · display ${r.refresh.toFixed(0)} Hz · target ${target.toFixed(0)} fps · Detail ${Number(detail.toFixed(2))}× · ${shown.length} object${shown.length > 1 ? "s" : ""}. Results change with window size.</p>`);
+    const p = r.probe;
+    const bottleneck = p.capped
+      ? `<p class="finding info"><strong>No bottleneck.</strong> <span>Even the slowest view runs at your display's refresh rate (${r.refresh.toFixed(0)} Hz), so there's headroom to spare.</span></p>`
+      : p.fillBound
+      ? `<p class="finding info"><strong>Bottleneck: pixels (overdraw).</strong> <span>The slowest view ran ${p.full.toFixed(0)} fps at this resolution and ${p.half.toFixed(0)} fps at half: splats here are large on screen and stack up. Resolution 75% or 50% helps far more than lowering Detail.</span></p>`
+      : `<p class="finding info"><strong>Bottleneck: splat count.</strong> <span>Halving the resolution barely helped (${p.full.toFixed(0)} → ${p.half.toFixed(0)} fps), so the cost is the number of splats drawn. Lowering Detail helps most.</span></p>`;
+    if (worst.rating.level !== "good") {
+      const suggest = Math.max(0.25, Math.min(1, detail * (worst.g.fps / target)));
+      const fix = p.fillBound
+        ? `Set Resolution to ${p.half >= target * 1.2 ? "75%" : "50%"} (about ${p.half.toFixed(0)} fps at 50% in the slowest view).`
+        : `Try Detail ≈ ${Number(suggest.toFixed(2))}× (fewer splats per frame, slightly softer image).`;
+      lines.push(`<p class="finding medium"><strong>${worst.name} views aren't smooth on this device.</strong> <span>${fix}</span></p>`);
+    }
+    lines.push(bottleneck);
+    const hitches = r.outside.hitches + r.inside.hitches;
+    if (hitches) lines.push(`<p class="hint">${hitches} pause${hitches > 1 ? "s" : ""} over 0.1 s during the tour, usually Spark updating the LoD selection or streaming after a big camera jump. These matter less than steady frame rate.</p>`);
+    out.innerHTML = lines.join("");
+  } catch (err) {
+    out.textContent = `Measurement failed: ${err.message ?? err}`;
+  } finally {
+    btn.disabled = false;
   }
 }
 
@@ -186,6 +280,13 @@ $("#v-url-form").addEventListener("submit", (e) => {
   openUrl($("#v-url").value.trim());
 });
 $("#v-frame").addEventListener("click", () => view && focus(objects));
+$("#v-measure").addEventListener("click", runBenchmark);
+$("#v-res").value = String(prefs.res ?? 1);
+$("#v-res").addEventListener("change", (e) => {
+  prefs.res = Number(e.target.value);
+  savePrefs();
+  view?.setRenderScale(prefs.res);
+});
 $("#v-detail").addEventListener("input", applyDetail);
 $("#v-speed").value = prefs.speed ?? 0;
 $("#v-speed").addEventListener("input", applySpeed);

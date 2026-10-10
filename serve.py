@@ -296,6 +296,44 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def send_file(self, path, content_type="application/octet-stream", attachment=False):
+        """Send a file, honoring a single "Range: bytes=a-b" request with 206
+        Partial Content (Spark streams .rad files with paged: true this way)."""
+        size = path.stat().st_size
+        start, end = 0, size - 1
+        m = re.fullmatch(r"bytes=(\d*)-(\d*)", (self.headers.get("Range") or "").strip())
+        if m and (m.group(1) or m.group(2)):
+            if m.group(1):
+                start = int(m.group(1))
+                end = min(int(m.group(2)), size - 1) if m.group(2) else size - 1
+            else:  # suffix range: last N bytes
+                start = max(0, size - int(m.group(2)))
+            if start > end or start >= size:
+                self.send_response(416)
+                self.send_header("Content-Range", f"bytes */{size}")
+                self.end_headers()
+                return
+            self.send_response(206)
+            self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+        else:
+            self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(end - start + 1))
+        self.send_header("Accept-Ranges", "bytes")
+        self.send_header("Cache-Control", "no-store")
+        if attachment:
+            self.send_header("Content-Disposition", f"attachment; filename*=UTF-8''{quote(path.name)}")
+        self.end_headers()
+        with open(path, "rb") as f:
+            f.seek(start)
+            remaining = end - start + 1
+            while remaining > 0:
+                chunk = f.read(min(1 << 20, remaining))
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
+                remaining -= len(chunk)
+
     def trusted(self, job=None):
         """Only this page may use the API: right Host (blocks DNS rebinding),
         same Origin if sent, and our custom header (or the job's token)."""
@@ -328,6 +366,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
         rest = self.route()
         if rest is None:
+            # Static files: serve Range requests ourselves (http.server ignores them),
+            # so .rad files under web/ can be streamed with paged: true.
+            if self.headers.get("Range"):
+                path = Path(self.translate_path(self.path))
+                if path.is_file():
+                    return self.send_file(path, self.guess_type(str(path)))
             return super().do_GET()
         job = self.job_for(rest) if rest[:1] == ["jobs"] else None
         if not self.trusted(job):
@@ -361,15 +405,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 path = wanted.get(rest[3])
                 if not path:
                     return self.send_json(404, {"error": "no such file"})
-                self.send_response(200)
-                self.send_header("Content-Type", "application/octet-stream")
-                self.send_header("Content-Length", str(path.stat().st_size))
-                self.send_header("Content-Disposition", f"attachment; filename*=UTF-8''{quote(path.name)}")
-                self.send_header("Cache-Control", "no-store")
-                self.end_headers()
-                with open(path, "rb") as f:
-                    shutil.copyfileobj(f, self.wfile, 1 << 20)
-                return
+                return self.send_file(path, attachment=True)
         return self.send_json(404, {"error": "not found"})
 
     def do_POST(self):

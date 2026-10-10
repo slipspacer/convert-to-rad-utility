@@ -259,3 +259,33 @@ body.viewer-page { height: 100vh; height: 100dvh; display: flex; flex-direction:
   .vurl { flex: 1 1 100%; }
   .vurl input { flex: 1; width: auto; }
 }
+
+/* viewer: file check + performance */
+.vrep[data-level="high"] { border-color: var(--err); color: var(--err); }
+.vrep[data-level="medium"] { border-color: var(--accent); color: var(--accent); }
+.vrep[data-level="good"] { color: var(--ok); }
+.vreport { margin-top: 8px; }
+.finding { font-size: 0.78rem; margin: 0 0 6px; padding: 6px 8px; border-radius: 6px; background: var(--surface-2); border-left: 3px solid var(--muted); }
+.finding strong { display: block; font-size: 0.8rem; }
+.finding.high { border-left-color: var(--err); }
+.finding.medium { border-left-color: var(--accent); }
+.finding.info { border-left-color: var(--accent-2); }
+.vperf { margin-top: 20px; padding-top: 14px; border-top: 1px solid var(--border); }
+.vperf h2 { margin-bottom: 6px; }
+.vperf .hint { margin-bottom: 8px; }
+#v-perf-out { margin-top: 10px; font-size: 0.82rem; }
+.perf-table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; margin-bottom: 6px; }
+.perf-table th, .perf-table td { text-align: left; padding: 4px 4px; border-bottom: 1px solid var(--border); font-size: 0.8rem; }
+.perf-table th { color: var(--muted); font-weight: 600; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em; }
+.pill { font-size: 0.72rem; font-weight: 600; padding: 1px 7px; border-radius: 99px; background: var(--surface-2); }
+.pill.good { color: var(--ok); background: color-mix(in srgb, var(--ok) 14%, transparent); }
+.pill.medium { color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.pill.high { color: var(--err); background: color-mix(in srgb, var(--err) 12%, transparent); }
+
+/* converter: file check on the job card */
+.filecheck { margin-top: 10px; font-size: 0.85rem; }
+.filecheck summary { cursor: pointer; font-weight: 600; }
+.filecheck[data-level="high"] summary { color: var(--err); }
+.filecheck[data-level="medium"] summary { color: var(--accent); }
+.filecheck[data-level="good"] summary { color: var(--ok); }
+.filecheck-body { margin-top: 8px; }

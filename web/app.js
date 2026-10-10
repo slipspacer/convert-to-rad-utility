@@ -2,9 +2,12 @@ import {
   native, probeNative, buildLodFlags, nativeBlocker, nativeIgnored, runNativeJob, discardNativeJob,
   detectOS, terminalCommands, oneClickScript, binariesPublished, nativeOutputName,
 } from "./native.js";
-import { createSplatView, meshBounds, worldBox, setFlipped } from "./splat-view.js";
+import { createSplatView, meshBounds, worldBox, setFlipped, benchmark } from "./splat-view.js";
+import { radReport, reportText } from "./rad-report.js";
 
 const $ = (sel, root = document) => root.querySelector(sel);
+// Started at load; native jobs wait for it so they know whether serve.py is there.
+const nativeReady = probeNative();
 const form = $(".settings");
 const SETTINGS_KEY = "rad-converter.settings.v1";
 
@@ -190,6 +193,11 @@ function buildLogText(job, savedRadName) {
     ...describeSettings(settings).map(row),
     ...(result.encoding ? [row(["Resolved encoding", JSON.stringify(result.encoding)])] : []),
     "",
+    "File check",
+    "----------",
+    ...(job.report ? reportText(job.report) : ["(not available for this output)"]),
+    ...(job.benchmark ? ["", "Measured on this device", "-----------------------", ...job.benchmark] : []),
+    "",
     "Log",
     "---",
     ...job.log,
@@ -259,6 +267,7 @@ function createJob(file, settings) {
       stage: $(".stage", el), stats: $(".stats", el), error: $(".error", el), log: $(".log", el),
       save: $(".save", el), saved: $(".saved", el), download: $(".download", el), preview: $(".preview", el), cancel: $(".cancel", el), logToggle: $(".log-toggle", el),
       native: $(".native-switch", el),
+      filecheck: $(".filecheck", el),
     },
   };
   const { ui } = job;
@@ -313,10 +322,10 @@ function switchToNative(job) {
 
 function resetJobUi(job) {
   const { ui } = job;
-  for (const el of [ui.error, ui.stats, ui.saved, ui.save, ui.download, ui.preview, ui.native]) el.hidden = true;
+  for (const el of [ui.error, ui.stats, ui.saved, ui.save, ui.download, ui.preview, ui.native, ui.filecheck]) el.hidden = true;
   ui.bar.classList.remove("indet");
   ui.fill.style.width = "0";
-  job.result = job.processed = job.input = null;
+  job.result = job.processed = job.input = job.report = job.benchmark = null;
 }
 
 function setState(job, state) {
@@ -375,6 +384,7 @@ function runJob(job) {
 }
 
 async function runNative(job, settings, resolve) {
+  await nativeReady; // a file dropped right after page load must not race the server probe
   const blocker = nativeBlocker(settings, job.file.name);
   if (blocker) {
     fail(job, blocker);
@@ -538,6 +548,7 @@ function complete(job, data) {
   ui.download.hidden = false;
   ui.download.textContent = files.length > 1 ? "Download .zip" : "Download .rad";
   updateSaveButtons(job);
+  job.reportPromise = runFileCheck(job);
   if (canPick() && outDir) autoSave(job);
   // Chunked headers reference .radc files by relative name, which can't be
   // resolved from in-memory bytes, so only single-file output is previewable.
@@ -547,6 +558,33 @@ function complete(job, data) {
   appendLog(job, t.native != null
     ? `Timings: native build-lod ${fmtTime(t.native)}, total ${fmtTime(t.total)}`
     : `Timings: decode ${fmtTime(t.decode)}, LoD ${fmtTime(t.lod)}, encode ${fmtTime(t.encode)}`);
+}
+
+// Static file check of the result (sampled chunks; native results via Range
+// requests to the local server). Shown on the card and written to the log.
+async function runFileCheck(job) {
+  const { ui } = job;
+  const files = job.result.files;
+  if (files.length > 1) return; // chunked: chunks referenced by name, checked in the Viewer instead
+  try {
+    const report = files[0].url ? await radReport({ url: files[0].url }) : await radReport({ bytes: files[0].bytes });
+    job.report = report;
+    const label = { high: "Will be slow to render", medium: "Heavier than it needs to be", good: "Nothing heavy found" }[report.level];
+    $("summary", ui.filecheck).textContent = `File check: ${label}`;
+    ui.filecheck.dataset.level = report.level;
+    $(".filecheck-body", ui.filecheck).replaceChildren(...report.findings.map((f) => {
+      const p = document.createElement("p");
+      p.className = `finding ${f.level}`;
+      p.innerHTML = "<strong></strong> <span></span>";
+      p.firstChild.textContent = f.title;
+      p.lastChild.textContent = f.detail;
+      return p;
+    }));
+    ui.filecheck.hidden = false;
+    appendLog(job, `File check: ${label}`);
+  } catch (err) {
+    console.warn("File check failed", err);
+  }
 }
 
 async function fileBytes(file) {
@@ -787,6 +825,7 @@ function showSaved(job, text, isError = false) {
 
 async function autoSave(job) {
   try {
+    await job.reportPromise; // so the saved log includes the file check
     await ensureWritable(outDir);
     job.savedTo = job.result.files.length > 1 ? await writeChunked(outDir, job) : await writeSingle(outDir, job);
     showSaved(job, `Saved to ${job.savedTo}`);
@@ -837,7 +876,7 @@ window.addEventListener("drop", (e) => e.preventDefault());
 // ---------- preview ----------
 
 const dialog = $("#viewer");
-let viewer = null; // { view, mesh, box, flipped }
+let viewer = null; // { view, mesh, box, flipped, job }
 
 async function openPreview(job) {
   const status = $("#viewer-status");
@@ -860,6 +899,7 @@ async function openPreview(job) {
     // Browser results carry robust bounds from the converter; native results
     // are sampled from the file's own (LoD) splats.
     const b = job.processed.bounds;
+    viewer.job = job;
     viewer.box = b
       ? new view.THREE.Box3(new view.THREE.Vector3(...b.min), new view.THREE.Vector3(...b.max))
       : await meshBounds(view, mesh);
@@ -878,6 +918,41 @@ $("#viewer-flip").addEventListener("click", () => {
   viewer.flipped = !viewer.flipped;
   setFlipped(viewer.mesh, viewer.flipped);
   viewer.view.frame(worldBox(viewer.view, viewer.mesh, viewer.box));
+});
+$("#viewer-measure").addEventListener("click", async () => {
+  if (!viewer?.mesh || !viewer.box) return;
+  const btn = $("#viewer-measure");
+  const status = $("#viewer-status");
+  const before = status.textContent;
+  btn.disabled = true;
+  try {
+    const r = await benchmark(viewer.view, worldBox(viewer.view, viewer.mesh, viewer.box), {
+      meshes: [viewer.mesh],
+      onStep: (text, p) => { status.textContent = `${text}${p ? ` · ${Math.round(p * 100)}%` : ""}…`; },
+    });
+    const c = viewer.view.renderer.domElement;
+    const fmt = (g) => `${g.fps.toFixed(0)} fps (dips ${g.worst.toFixed(0)})`;
+    const where = r.probe.capped
+      ? `none, it runs at the display's ${r.refresh.toFixed(0)} Hz refresh rate`
+      : r.probe.fillBound ? "pixels (overdraw): a lower render resolution helps most" : "splat count: a lower LoD detail helps most";
+    const summary = `Outside ${fmt(r.outside)} · inside ${fmt(r.inside)} at ${c.width}×${c.height} px · bottleneck: ${where}`;
+    status.textContent = summary;
+    if (viewer.job) {
+      viewer.job.benchmark = [
+        `Canvas:              ${c.width}x${c.height} px, display ${r.refresh.toFixed(0)} Hz`,
+        `Outside views:       ${r.outside.fps.toFixed(0)} fps, dips ${r.outside.worst.toFixed(0)} fps, ${(r.outside.splats / 1e6).toFixed(2)}M splats drawn`,
+        `Inside views:        ${r.inside.fps.toFixed(0)} fps, dips ${r.inside.worst.toFixed(0)} fps, ${(r.inside.splats / 1e6).toFixed(2)}M splats drawn`,
+        `Bottleneck:          ${where} (slowest view ${r.probe.full.toFixed(0)} fps, ${r.probe.half.toFixed(0)} fps at half resolution)`,
+      ];
+      appendLog(viewer.job, `Measured: ${summary}`);
+    }
+  } catch (err) {
+    status.textContent = `Measurement failed: ${err.message ?? err}`;
+    console.error(err);
+    setTimeout(() => (status.textContent = before), 4000);
+  } finally {
+    btn.disabled = false;
+  }
 });
 $("#viewer-close").addEventListener("click", () => dialog.close());
 dialog.addEventListener("close", () => {
@@ -938,7 +1013,7 @@ for (const btn of document.querySelectorAll("#handoff [data-copy]")) {
 }
 $("#handoff-close").addEventListener("click", () => handoff.close());
 
-probeNative().then(() => {
+nativeReady.then(() => {
   document.body.dataset.native = native.mode;
   updateHints();
 });

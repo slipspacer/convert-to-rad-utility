@@ -49,6 +49,14 @@
       <label class="vdetail" title="Splat budget multiplier for LoD objects (SparkRenderer.lodSplatScale)">
         Detail <input type="range" id="v-detail" min="-2" max="2" step="0.25" value="0"> <output id="v-detail-out">1×</output>
       </label>
+      <label class="vdetail" title="Render resolution relative to your screen's pixel density. Lower is faster for scenes with lots of overlapping splats.">
+        Resolution
+        <select id="v-res">
+          <option value="1">100%</option>
+          <option value="0.75">75%</option>
+          <option value="0.5">50%</option>
+        </select>
+      </label>
       <label class="check vlod" title="Build an LoD tree in the browser for non-RAD files so they share the splat budget (slower to load)">
         <input type="checkbox" id="v-lod"> LoD for non-RAD files
       </label>
@@ -60,6 +68,13 @@
       <h2>Objects</h2>
       <ol id="v-list"></ol>
       <p class="hint" id="v-list-empty">Nothing loaded yet.</p>
+
+      <section class="vperf" aria-labelledby="v-perf-h">
+        <h2 id="v-perf-h">Performance</h2>
+        <p class="hint">Times rendering on this device: 6 views from outside the scene and 6 looking around from its centre, about 20 seconds.</p>
+        <button type="button" class="btn primary" id="v-measure" disabled>Measure</button>
+        <div id="v-perf-out"></div>
+      </section>
     </aside>
 
     <section class="vstage" id="v-stage">
@@ -87,7 +102,9 @@
         <button type="button" class="btn vvis">Hide</button>
         <button type="button" class="btn vflip">Flip</button>
         <button type="button" class="btn vfocus">Frame</button>
+        <button type="button" class="btn vrep" hidden>File check</button>
       </div>
+      <div class="vreport" hidden></div>
     </li>
   </template>
 </body>

@@ -9,7 +9,9 @@ export async function createSplatView(host) {
   const spark = await import("@sparkjsdev/spark");
 
   const renderer = new THREE.WebGLRenderer({ antialias: false });
-  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  let renderScale = 1;
+  const applyPixelRatio = () => renderer.setPixelRatio(Math.min(devicePixelRatio, 2) * renderScale);
+  applyPixelRatio();
   host.append(renderer.domElement);
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x0d0d0c);
@@ -21,6 +23,7 @@ export async function createSplatView(host) {
   orbit.enableDamping = true;
   let fly = null;
   let mode = "orbit";
+  let controlsEnabled = true;
   let sceneRadius = 1;
   // Fly speed: 5% of the framed scene's radius per second, times a user
   // multiplier (Shift x5 and Ctrl slow-down come from Spark's FpsMovement).
@@ -85,7 +88,8 @@ export async function createSplatView(host) {
 
     start(onFrame) {
       renderer.setAnimationLoop((time) => {
-        if (mode === "fly") fly.update(camera);
+        if (!controlsEnabled) { /* benchmark is steering the camera */ }
+        else if (mode === "fly") fly.update(camera);
         else orbit.update();
         onFrame?.(time);
         renderer.render(scene, camera);
@@ -94,6 +98,20 @@ export async function createSplatView(host) {
 
     stop() {
       renderer.setAnimationLoop(null);
+    },
+
+    /** Fraction of the device's pixel density to render at (1, 0.75, 0.5…). */
+    setRenderScale(scale) {
+      renderScale = scale;
+      applyPixelRatio();
+      resize();
+    },
+    get renderScale() { return renderScale; },
+    get pixels() { return renderer.domElement.width * renderer.domElement.height; },
+
+    setControlsEnabled(enabled) {
+      controlsEnabled = enabled;
+      if (fly) fly.lastTime = 0;
     },
   };
   return view;
@@ -167,4 +185,105 @@ export function worldBox(view, mesh, localBox) {
 // Many captures (COLMAP-style) are Y-down; rotating 180° about X shows them upright.
 export function setFlipped(mesh, flipped) {
   mesh.quaternion.set(flipped ? 1 : 0, 0, 0, flipped ? 0 : 1);
+}
+
+// ---------- benchmark ----------
+
+const nextFrame = () => new Promise((r) => requestAnimationFrame(r));
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function measureFrames(view, ms) {
+  const dts = [];
+  let splats = 0;
+  let last = await nextFrame();
+  const end = last + ms;
+  while (last < end) {
+    const now = await nextFrame();
+    dts.push(now - last);
+    splats += view.sparkRenderer.activeSplats ?? 0;
+    last = now;
+  }
+  const hitches = dts.filter((dt) => dt > 100).length; // pauses over 0.1 s
+  dts.sort((a, b) => a - b);
+  const avg = dts.reduce((a, b) => a + b, 0) / dts.length;
+  return { fps: 1000 / avg, low: 1000 / dts[Math.floor(dts.length * 0.95)], splats: splats / dts.length, hitches };
+}
+
+/**
+ * Time rendering on this device: the display's refresh rate (splats hidden),
+ * then 6 views from outside the scene and 6 looking around from its centre.
+ * box: world-space Box3 of the scene. Restores the camera afterwards.
+ */
+export async function benchmark(view, box, { meshes, onStep, settleMs = 900, firstSettleMs = 2500, measureMs = 1000 } = {}) {
+  const { THREE, camera, orbit } = view;
+  const saved = { pos: camera.position.clone(), quat: camera.quaternion.clone(), target: orbit.target.clone() };
+  view.setControlsEnabled(false);
+  try {
+    // Refresh-rate ceiling: nothing to draw.
+    const visible = meshes.map((m) => m.visible);
+    meshes.forEach((m) => (m.visible = false));
+    onStep?.("Measuring display refresh rate");
+    await sleep(200);
+    const refresh = (await measureFrames(view, 600)).fps;
+    meshes.forEach((m, i) => (m.visible = visible[i]));
+
+    const center = box.getCenter(new THREE.Vector3());
+    const r = Math.max(1e-3, box.getSize(new THREE.Vector3()).length() / 2);
+    const shots = [];
+    for (let k = 0; k < 6; k++) {
+      const a = (k / 6) * Math.PI * 2;
+      shots.push({ group: "outside", pos: center.clone().add(new THREE.Vector3(Math.cos(a) * 1.6 * r, 0.35 * r, Math.sin(a) * 1.6 * r)), look: center });
+    }
+    for (let k = 0; k < 6; k++) {
+      const a = (k / 6) * Math.PI * 2;
+      shots.push({ group: "inside", pos: center.clone(), look: center.clone().add(new THREE.Vector3(Math.cos(a) * r, 0, Math.sin(a) * r)) });
+    }
+
+    const results = [];
+    for (let i = 0; i < shots.length; i++) {
+      const s = shots[i];
+      camera.position.copy(s.pos);
+      camera.lookAt(s.look);
+      camera.updateMatrixWorld();
+      onStep?.(`${s.group === "outside" ? "Outside" : "Inside"} view ${(i % 6) + 1} of 6`, (i + 1) / shots.length);
+      await sleep(i === 0 || i === 6 ? firstSettleMs : settleMs); // let LoD (and streaming) settle
+      results.push({ ...s, ...(await measureFrames(view, measureMs)) });
+    }
+    // Fill-rate probe: re-time the slowest view at half resolution. A big
+    // speed-up means the cost is pixels (overdraw), not the number of splats.
+    const slowest = results.reduce((a, b) => (a.fps < b.fps ? a : b));
+    camera.position.copy(slowest.pos);
+    camera.lookAt(slowest.look);
+    camera.updateMatrixWorld();
+    const scale0 = view.renderScale;
+    onStep?.("Checking whether pixels or splats are the bottleneck", 1);
+    view.setRenderScale(scale0 * 0.5);
+    await sleep(settleMs);
+    const half = await measureFrames(view, measureMs);
+    view.setRenderScale(scale0);
+    await sleep(300);
+    const full = await measureFrames(view, measureMs);
+    // At the display's refresh rate there's nothing to diagnose: frames are capped.
+    const capped = full.fps >= refresh * 0.9;
+    const probe = { full: full.fps, half: half.fps, capped, fillBound: !capped && half.fps > full.fps * 1.4 };
+
+    const summarize = (group) => {
+      const g = results.filter((x) => x.group === group);
+      const lows = g.map((x) => x.low).sort((a, b) => a - b);
+      return {
+        fps: g.reduce((a, x) => a + x.fps, 0) / g.length,
+        // Typical dips: median over the views of each view's 1-in-20 slowest frame,
+        // so one stray pause (an LoD rebuild after the camera jumps) doesn't decide it.
+        worst: lows[Math.floor(lows.length / 2)],
+        splats: g.reduce((a, x) => a + x.splats, 0) / g.length,
+        hitches: g.reduce((a, x) => a + x.hitches, 0),
+      };
+    };
+    return { refresh, outside: summarize("outside"), inside: summarize("inside"), probe, pixels: view.pixels };
+  } finally {
+    camera.position.copy(saved.pos);
+    camera.quaternion.copy(saved.quat);
+    orbit.target.copy(saved.target);
+    view.setControlsEnabled(true);
+  }
 }
