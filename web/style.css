@@ -50,6 +50,8 @@ small { color: var(--muted); font-weight: 400; }
 .top { max-width: 1180px; margin: 0 auto; padding: 28px 16px 8px; display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
 .topnav { text-decoration: none; white-space: nowrap; }
 .brand { display: flex; flex-direction: column; gap: 14px; align-items: flex-start; }
+.logo-link { display: inline-block; line-height: 0; border-radius: 6px; }
+.logo-link:hover { opacity: 0.85; }
 .brand-logo img { display: block; height: 40px; width: auto; max-width: 100%; }
 .brand h1 { font-size: 1.5rem; letter-spacing: -0.01em; }
 .brand p { margin: 4px 0 0; color: var(--muted); max-width: 62ch; }
