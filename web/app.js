@@ -14,8 +14,8 @@ const HINTS = {
     none: "No LoD tree: plain RAD of the original splats (keeps an existing tree if the input has one).",
   },
   output: {
-    single: "One self-contained .rad file. Load it with new SplatMesh({ url }).",
-    chunked: "Small .rad header + 64K-splat .radc chunk files, zipped. Host them together and load with paged: true.",
+    single: "One self-contained .rad (recommended). Stream it with new SplatMesh({ url, paged: true }) from any host that supports HTTP Range requests.",
+    chunked: "A small .rad header plus 64K-splat .radc files, for hosts or CDNs that can't serve Range requests. Upload them together and load the .rad with paged: true.",
   },
   precision: {
     standard: "Full float precision while building the LoD tree (Spark's gsplat; default).",

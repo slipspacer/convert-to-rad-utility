@@ -108,10 +108,90 @@ merge is sensitive to near-ties. Spark loads and renders both versions the same 
 
 ## Using the output
 
+The default output, a single `.rad`, is all you need: the header and every chunk are in one file,
+with no separate metadata file. Stream it:
+
 ```js
-const splats = new SplatMesh({ url: "scene-lod.rad" });              // single file
-const streamed = new SplatMesh({ url: "scene-lod.rad", paged: true }); // chunked: host .rad + .radc together
+const splats = new SplatMesh({ url: "scene-lod.rad", paged: true });
+scene.add(splats);
 ```
+
+With `paged: true`, Spark reads the header, then fetches only the 64K-splat chunks the current view
+needs, coarsest first. A rough version appears almost immediately and detail fills in as you move.
+Without `paged`, `new SplatMesh({ url })` downloads the whole file before showing anything.
+
+Multiple `.rad` files can share one scene, each as its own `SplatMesh`. Spark splits one splat
+budget across all of them, and they can be mixed with other formats such as SOG.
+
+## Hosting RAD files (server requirements)
+
+Serving `.rad` files needs only static file hosting. There's no server-side code, database or
+conversion step: the converter (including `serve.py` and the native engine) runs on the author's
+own computer. What follows applies to whichever host or CDN serves the `.rad` files to viewers.
+
+### Single `.rad` + `paged: true` (default)
+
+**Required:**
+- **HTTP Range requests.** Spark fetches the file in pieces, each with a header like
+  `Range: bytes=1234567-2456789`, and the server must answer `206 Partial Content` with just those
+  bytes. This is a hard requirement. Spark doesn't check for 206, so a server that ignores Range
+  and answers `200` with the whole file makes every chunk request download the entire file (595 MB
+  for the trogir example), and decoding fails.
+- **No on-the-fly compression for `.rad`.** The chunk data is already compressed. Gzip or brotli
+  `Content-Encoding` changes byte offsets and breaks or defeats Range requests on many servers and
+  CDNs. Serve `.rad` as `application/octet-stream` with compression disabled.
+- **CORS, if the viewer page is on a different origin from the files:**
+  `Access-Control-Allow-Origin: <viewer origin>` (or `*`);
+  `Access-Control-Allow-Headers: Range`;
+  `Access-Control-Expose-Headers: Content-Range, Content-Length, Accept-Ranges`.
+  Answer `OPTIONS` preflights if you add custom auth headers.
+
+**Request pattern** (useful for capacity and CDN planning):
+- **Header:** a request for the first 64 KB, retried with 256 KB, then 1 MB, if the header is
+  larger.
+- **Chunks:** one Range request per 64K-splat chunk, about 1–3 MB each for SH degree 0, more with
+  higher SH degrees. Trogir (33.7M splats, 595 MB) is 514 chunks of about 1.2 MB.
+- **Concurrency:** 3 chunk requests in flight per viewer by default (`SparkRenderer.numLodFetchers`).
+  HTTP/2 or HTTP/3 helps.
+- **What a viewer downloads:** at most 16.7M splats are resident at once on desktop (fewer on
+  mobile), so a large scene is never downloaded all at once. Moving around fetches new chunks
+  and can re-fetch evicted ones. A typical session therefore transfers a fraction of the file;
+  the worst case is roughly the whole file plus some re-fetches.
+
+**Recommended:**
+- **A CDN that caches byte ranges.** CloudFront, Cloudflare, Fastly and Google Cloud CDN all do.
+  Check your plan's maximum cacheable object size, since large `.rad` files can be hundreds of MB.
+  Some CDN plans won't cache objects of that size and pass every request through to the origin.
+- **Long cache lifetimes with versioned file names**, e.g. `scene-lod.v3.rad` with
+  `Cache-Control: public, max-age=31536000, immutable`.
+- **`Accept-Ranges: bytes`** and a correct `Content-Length` on full responses.
+
+**Access control:** `SplatMesh` accepts `requestHeader` (e.g. an `Authorization` bearer token) and
+`withCredentials` (cookies) for protected files. Pre-signed URLs (e.g. S3) also work, because every
+request uses the same URL.
+
+**Check a host** (expect `206` and a `Content-Range` header):
+
+```bash
+curl -s -o /dev/null -D - -H "Range: bytes=0-65535" https://your-host/path/scene-lod.rad
+```
+
+The converter's local server (`serve.py`) and `python -m http.server` don't support Range requests
+(they answer `200`), so don't use them to test paged streaming. Use a real static server such as
+nginx or Caddy, or your actual host.
+
+### Chunked output (`.rad` header + `.radc` files)
+
+Use this only when the host or CDN can't serve Range requests, or caches small whole files much
+better. Each chunk is a separate plain `GET`, so no Range support is needed. Upload the `.rad`
+and all of its `.radc` files to the same folder: the header refers to them by relative name
+(`scene-lod-0.radc`, `scene-lod-1.radc`, …). CORS needs are the same, minus the Range headers.
+Pre-signed URLs don't work, because each chunk needs its own signed URL.
+
+### Not needed on the server
+- **The converter itself.** `serve.py`, the native `build-lod` tool and this web app are authoring
+  tools that run on the author's computer.
+- **Any special MIME type or server module** beyond normal static hosting.
 
 ## Rebuilding the WASM
 

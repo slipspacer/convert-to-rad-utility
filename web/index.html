@@ -166,8 +166,9 @@
       <p class="foot">
         Uses <a href="https://github.com/sparkjsdev/spark" target="_blank" rel="noopener">Spark</a>'s own
         decoders, LoD builders and RAD encoder (spark-lib, compiled to WebAssembly) &mdash; the same pipeline as its
-        <code>build-lod</code> CLI. Load the result with <code>new SplatMesh({ url: "scene-lod.rad" })</code>, or
-        <code>paged: true</code> to stream.
+        <code>build-lod</code> CLI. Stream the result with
+        <code>new SplatMesh({ url: "scene-lod.rad", paged: true })</code>. The host must support HTTP Range requests
+        (see the README's hosting notes).
       </p>
     </section>
   </main>
