@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RAD Viewer</title>
+  <meta name="description" content="View Spark .rad files (and other Gaussian splat formats) locally, or stream a .rad from a URL with paged loading.">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='11' cy='13' r='7' fill='%23e8743b' opacity='.85'/%3E%3Cellipse cx='20' cy='19' rx='9' ry='6' fill='%233b82c4' opacity='.8'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="style.css">
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/",
+        "@sparkjsdev/spark": "https://cdn.jsdelivr.net/npm/@sparkjsdev/spark@2.3.1/dist/spark.module.js"
+      }
+    }
+  </script>
+  <script type="module" src="viewer.js"></script>
+</head>
+<body class="viewer-page">
+  <header class="vbar">
+    <a class="vbrand" href="index.html" title="Back to the converter">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><circle cx="11" cy="13" r="7" fill="var(--accent)" opacity=".85"/><ellipse cx="20" cy="19" rx="9" ry="6" fill="var(--accent-2)" opacity=".8"/></svg>
+      <span>RAD Viewer</span>
+    </a>
+    <nav class="vnav"><a href="index.html">Converter</a></nav>
+
+    <div class="vgroup">
+      <label class="btn primary vopen">
+        <input type="file" id="v-files" multiple accept=".rad,.spz,.ply,.splat,.ksplat,.sog,.zip">
+        Open files…
+      </label>
+      <form id="v-url-form" class="vurl">
+        <input type="url" id="v-url" placeholder="https://…/scene-lod.rad" aria-label="URL of a .rad to stream" required>
+        <button type="submit" class="btn">Stream</button>
+      </form>
+    </div>
+
+    <div class="vgroup">
+      <div class="seg vmode" role="radiogroup" aria-label="Camera controls">
+        <label><input type="radio" name="v-mode" value="orbit" checked><span>Orbit</span></label>
+        <label><input type="radio" name="v-mode" value="fly"><span>Fly</span></label>
+      </div>
+      <button type="button" class="btn" id="v-frame">Frame all</button>
+      <label class="vdetail" title="Splat budget multiplier for LoD objects (SparkRenderer.lodSplatScale)">
+        Detail <input type="range" id="v-detail" min="-2" max="2" step="0.25" value="0"> <output id="v-detail-out">1×</output>
+      </label>
+      <label class="check vlod" title="Build an LoD tree in the browser for non-RAD files so they share the splat budget (slower to load)">
+        <input type="checkbox" id="v-lod"> LoD for non-RAD files
+      </label>
+    </div>
+  </header>
+
+  <main class="vmain">
+    <aside class="vobjects" aria-label="Loaded splat files">
+      <h2>Objects</h2>
+      <ol id="v-list"></ol>
+      <p class="hint" id="v-list-empty">Nothing loaded yet.</p>
+    </aside>
+
+    <section class="vstage" id="v-stage">
+      <div id="v-canvas"></div>
+      <div class="vempty" id="v-empty">
+        <strong>Drop splat files here</strong>
+        <span>.rad (with LoD), .spz, .ply, .splat, .ksplat, .sog. Or paste a .rad URL above to stream it with <code>paged: true</code>, the way a website would load it.</span>
+      </div>
+      <div class="vdrop" id="v-drop" hidden>Drop to add to the scene</div>
+      <div class="vhud">
+        <span id="v-hint">Drag to orbit · right-drag to pan · scroll to zoom</span>
+        <span id="v-stats"></span>
+      </div>
+    </section>
+  </main>
+
+  <template id="v-item-tpl">
+    <li class="vitem">
+      <div class="vitem-top">
+        <span class="vname"></span>
+        <button type="button" class="vx" title="Remove" aria-label="Remove">×</button>
+      </div>
+      <div class="vmeta"></div>
+      <div class="vactions">
+        <button type="button" class="btn vvis">Hide</button>
+        <button type="button" class="btn vflip">Flip</button>
+        <button type="button" class="btn vfocus">Frame</button>
+      </div>
+    </li>
+  </template>
+</body>
+</html>

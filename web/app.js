@@ -2,6 +2,7 @@ import {
   native, probeNative, buildLodFlags, nativeBlocker, nativeIgnored, runNativeJob, discardNativeJob,
   detectOS, terminalCommands, oneClickScript, binariesPublished, nativeOutputName,
 } from "./native.js";
+import { createSplatView, meshBounds, worldBox, setFlipped } from "./splat-view.js";
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const form = $(".settings");
@@ -836,59 +837,7 @@ window.addEventListener("drop", (e) => e.preventDefault());
 // ---------- preview ----------
 
 const dialog = $("#viewer");
-let viewer = null;
-
-async function getViewer() {
-  if (viewer) return viewer;
-  const THREE = await import("three");
-  const { OrbitControls } = await import("three/addons/controls/OrbitControls.js");
-  const { SparkRenderer, SplatMesh } = await import("@sparkjsdev/spark");
-  const host = $("#viewer-canvas");
-  const renderer = new THREE.WebGLRenderer({ antialias: false });
-  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
-  host.append(renderer.domElement);
-  const scene = new THREE.Scene();
-  scene.background = new THREE.Color(0x0d0d0c);
-  const camera = new THREE.PerspectiveCamera(55, 1, 0.01, 5000);
-  const spark = new SparkRenderer({ renderer });
-  scene.add(spark);
-  const controls = new OrbitControls(camera, renderer.domElement);
-  controls.enableDamping = true;
-  const resize = () => {
-    const { clientWidth: w, clientHeight: h } = host;
-    if (!w || !h) return;
-    renderer.setSize(w, h, false);
-    camera.aspect = w / h;
-    camera.updateProjectionMatrix();
-  };
-  new ResizeObserver(resize).observe(host);
-  viewer = { THREE, SplatMesh, renderer, scene, camera, controls, resize, mesh: null, flipped: true };
-  return viewer;
-}
-
-// 2nd..98th percentile of splat centers per axis from up to 200K evenly spaced
-// splats (LoD tree included), so stray floaters don't throw off the framing.
-function sampleBounds(mesh, THREE) {
-  const src = mesh.packedSplats?.lodSplats ?? mesh.extSplats?.lodSplats ?? mesh.packedSplats ?? mesh.extSplats;
-  const n = src?.numSplats ?? 0;
-  if (!n) throw new Error("The file contains no splats to show");
-  const samples = Math.min(n, 200000);
-  const step = n / samples;
-  const axes = [new Float32Array(samples), new Float32Array(samples), new Float32Array(samples)];
-  for (let k = 0; k < samples; k++) {
-    const c = src.getSplat(Math.floor(k * step)).center;
-    axes[0][k] = c.x;
-    axes[1][k] = c.y;
-    axes[2][k] = c.z;
-  }
-  const lo = [], hi = [];
-  for (const a of axes) {
-    a.sort();
-    lo.push(a[Math.floor(samples * 0.02)]);
-    hi.push(a[Math.min(samples - 1, Math.floor(samples * 0.98))]);
-  }
-  return [new THREE.Vector3(...lo), new THREE.Vector3(...hi)];
-}
+let viewer = null; // { view, mesh, box, flipped }
 
 async function openPreview(job) {
   const status = $("#viewer-status");
@@ -896,44 +845,28 @@ async function openPreview(job) {
   status.textContent = "Loading viewer…";
   dialog.showModal();
   try {
-    const v = await getViewer();
-    v.resize();
-    if (v.mesh) { v.scene.remove(v.mesh); v.mesh.dispose?.(); v.mesh = null; }
+    viewer ??= { view: await createSplatView($("#viewer-canvas")), mesh: null, box: null, flipped: true };
+    const { view } = viewer;
+    if (viewer.mesh) { view.scene.remove(viewer.mesh); viewer.mesh.dispose?.(); viewer.mesh = null; }
     status.textContent = "Loading splats…";
 
     const bytes = await fileBytes(job.result.files[0]);
-    const mesh = new v.SplatMesh({ fileBytes: bytes.slice(), fileName: job.result.radName });
-    v.mesh = mesh;
-    mesh.quaternion.set(v.flipped ? 1 : 0, 0, 0, v.flipped ? 0 : 1);
-    v.scene.add(mesh);
+    const mesh = new view.spark.SplatMesh({ fileBytes: bytes.slice(), fileName: job.result.radName });
+    viewer.mesh = mesh;
+    setFlipped(mesh, viewer.flipped);
+    view.scene.add(mesh);
     await mesh.initialized;
 
-    // Frame the camera on the robust (2–98th percentile) bounds computed during conversion.
-    let min, max;
+    // Browser results carry robust bounds from the converter; native results
+    // are sampled from the file's own (LoD) splats.
     const b = job.processed.bounds;
-    if (b) {
-      min = new v.THREE.Vector3(...b.min);
-      max = new v.THREE.Vector3(...b.max);
-    } else {
-      // Native results carry no bounds. SplatMesh.getBoundingBox() doesn't see
-      // splats loaded as an LoD tree (it returns an infinite box, i.e. a black
-      // view), so sample the LoD splats directly.
-      [min, max] = sampleBounds(mesh, v.THREE);
-    }
-    const center = min.clone().add(max).multiplyScalar(0.5).applyQuaternion(mesh.quaternion);
-    const radius = Math.max(1e-3, min.distanceTo(max) / 2);
-    v.controls.target.copy(center);
-    v.camera.near = radius / 1000;
-    v.camera.far = radius * 100;
-    v.camera.position.copy(center).add(new v.THREE.Vector3(0, radius * 0.35, radius * 1.6));
-    v.camera.updateProjectionMatrix();
-    v.controls.update();
+    viewer.box = b
+      ? new view.THREE.Box3(new view.THREE.Vector3(...b.min), new view.THREE.Vector3(...b.max))
+      : await meshBounds(view, mesh);
+    if (!viewer.box) throw new Error("The file contains no splats to show");
+    view.frame(worldBox(view, mesh, viewer.box));
     status.textContent = `${fmtCount(job.processed.splatCount)} splats${job.processed.hasLod ? " · LoD active" : ""}`;
-
-    v.renderer.setAnimationLoop(() => {
-      v.controls.update();
-      v.renderer.render(v.scene, v.camera);
-    });
+    view.start();
   } catch (err) {
     status.textContent = `Preview failed: ${err.message ?? err}`;
     console.error(err);
@@ -943,18 +876,14 @@ async function openPreview(job) {
 $("#viewer-flip").addEventListener("click", () => {
   if (!viewer?.mesh) return;
   viewer.flipped = !viewer.flipped;
-  viewer.mesh.quaternion.set(viewer.flipped ? 1 : 0, 0, 0, viewer.flipped ? 0 : 1);
-  // Mirror the orbit target through the X axis to keep the scene in view.
-  viewer.controls.target.y *= -1;
-  viewer.controls.target.z *= -1;
-  viewer.camera.position.y *= -1;
-  viewer.camera.position.z *= -1;
+  setFlipped(viewer.mesh, viewer.flipped);
+  viewer.view.frame(worldBox(viewer.view, viewer.mesh, viewer.box));
 });
 $("#viewer-close").addEventListener("click", () => dialog.close());
 dialog.addEventListener("close", () => {
   if (!viewer) return;
-  viewer.renderer.setAnimationLoop(null);
-  if (viewer.mesh) { viewer.scene.remove(viewer.mesh); viewer.mesh.dispose?.(); viewer.mesh = null; }
+  viewer.view.stop();
+  if (viewer.mesh) { viewer.view.scene.remove(viewer.mesh); viewer.mesh.dispose?.(); viewer.mesh = null; }
 });
 
 // ---------- native hand-off (page not opened through the launcher) ----------

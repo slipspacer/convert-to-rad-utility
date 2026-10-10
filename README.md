@@ -123,6 +123,27 @@ With `paged: true`, Spark reads the header, then fetches only the 64K-splat chun
 needs, coarsest first. A rough version appears almost immediately and detail fills in as you move.
 Without `paged`, `new SplatMesh({ url })` downloads the whole file before showing anything.
 
+### Viewer
+
+`viewer.html`, the **Open the Viewer** button on the converter, is a standalone Spark viewer for
+checking results:
+
+- **Open or drop files:** `.rad` (with its LoD tree), `.spz`, `.ply`, `.splat`, `.ksplat` or
+  `.sog`. Several files can share one scene, mixing formats, exactly as a site using Spark would
+  load them. Each object can be hidden, flipped (many captures are Y-down) or framed. **LoD for
+  non-RAD files** builds a Quick LoD tree in the browser for the others, so they join the shared
+  splat budget.
+- **Stream from a URL:** paste a `.rad` URL and press **Stream**. The file loads with
+  `paged: true`, using the same Range requests a production page makes, which makes this a quick
+  way to check a host (see the hosting requirements below). Linking to
+  `viewer.html?url=https://host/scene-lod.rad` streams that file on open.
+- **Controls:** **Orbit** (drag, right-drag to pan, scroll to zoom) or **Fly** (WASD, E/Q up and
+  down, drag to look, Shift faster, Ctrl slower). **Detail** sets the LoD splat budget from 0.25×
+  to 4× (`SparkRenderer.lodSplatScale`).
+- **Limits:** local files are read whole into the page rather than streamed (that needs a URL), so
+  very large files use a lot of browser memory. Streaming from a URL needs Range support, which
+  `serve.py` doesn't have, so stream from a real host.
+
 ### Scenes with several splat files (including mixed SOG + RAD)
 
 A scene can hold any number of splat files, and formats can be mixed. Each file is its own
