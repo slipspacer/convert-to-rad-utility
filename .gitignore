@@ -1,3 +1,5 @@
 rad-wasm/target/
 web/.test/
+native/bin/
 .claude/
+__pycache__/

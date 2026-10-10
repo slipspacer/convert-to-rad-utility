@@ -1,0 +1,16 @@
+{
+  "tool": "build-lod",
+  "sparkRepo": "https://github.com/sparkjsdev/spark",
+  "sparkRev": "c57ebb936a5d364e021a66a118204d599f6fdaa8",
+  "tag": "build-lod-c57ebb9",
+  "assets": {
+    "windows-x64": {
+      "url": "https://github.com/slipspacer/convert-to-rad-utility/releases/download/build-lod-c57ebb9/build-lod-windows-x64.exe",
+      "sha256": ""
+    },
+    "macos-universal": {
+      "url": "https://github.com/slipspacer/convert-to-rad-utility/releases/download/build-lod-c57ebb9/build-lod-macos-universal",
+      "sha256": ""
+    }
+  }
+}

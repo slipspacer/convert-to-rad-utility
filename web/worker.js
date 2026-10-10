@@ -8,6 +8,7 @@
 // shrinks, so this is the only way to shed a decoder's transient footprint
 // (SOG holds the whole zip plus unpacked images and per-property arrays).
 import init, { RadConverter } from "./pkg/rad_wasm.js";
+import { lodProgress } from "./progress.js";
 
 const ready = init();
 let wasmExports = null;
@@ -143,9 +144,8 @@ self.onmessage = async (event) => {
     const t1 = performance.now();
     const lodLog = (line) => {
       log(line);
-      // bhatt-lod / tiny-lod report "frontier: <done> / <total>" per level
-      const m = /frontier: (\d+) \/ (\d+)/.exec(line);
-      if (m) post({ type: "stage", stage, progress: Number(m[1]) / Number(m[2]) });
+      const progress = lodProgress(line);
+      if (progress != null) post({ type: "stage", stage, progress });
       if (line.startsWith("Ordering LoD tree")) post({ type: "stage", stage: "chunk", progress: null });
     };
     const processed = conv.process(settings.process, lodLog);

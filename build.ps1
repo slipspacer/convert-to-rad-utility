@@ -34,4 +34,4 @@ if ($LASTEXITCODE -ne 0) { throw "cargo build failed" }
 & $wb --target web --no-typescript --out-dir "$Root\web\pkg" "$Root\rad-wasm\target\wasm32-unknown-unknown\release\rad_wasm.wasm"
 if ($LASTEXITCODE -ne 0) { throw "wasm-bindgen failed" }
 
-Write-Host "Built web/pkg. Serve with: py -m http.server 8090 -d web"
+Write-Host "Built web/pkg. Serve with: py serve.py"

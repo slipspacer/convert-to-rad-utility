@@ -76,6 +76,15 @@
         <p class="hint" data-hint-for="precision"></p>
       </fieldset>
 
+      <fieldset class="field">
+        <legend>Engine</legend>
+        <div class="seg" role="radiogroup">
+          <label><input type="radio" name="engine" value="browser" checked><span>Browser</span></label>
+          <label><input type="radio" name="engine" value="native"><span>Native</span></label>
+        </div>
+        <p class="hint" data-hint-for="engine"></p>
+      </fieldset>
+
       <label class="field row">
         <span>Spherical harmonics</span>
         <select name="maxSh">
@@ -179,11 +188,62 @@
         <button type="button" class="btn download" hidden>Download</button>
         <button type="button" class="btn preview" hidden>Preview</button>
         <button type="button" class="btn cancel">Cancel</button>
+        <button type="button" class="btn native-switch" hidden>Switch to native engine</button>
         <button type="button" class="btn ghost log-toggle">Log</button>
       </div>
       <pre class="log" hidden></pre>
     </li>
   </template>
+
+  <dialog id="handoff" aria-labelledby="handoff-title">
+    <div class="handoff-body">
+      <h2 id="handoff-title">Convert with the native tool</h2>
+      <p>
+        <strong id="handoff-file"></strong> can be converted by Spark's native <code>build-lod</code> on this
+        computer. It uses the same settings and has no browser memory limit. The result,
+        <strong id="handoff-output"></strong>, is saved next to the original file.
+      </p>
+
+      <div class="os-tabs" role="tablist">
+        <button type="button" role="tab" data-os="windows">Windows</button>
+        <button type="button" role="tab" data-os="mac">Mac</button>
+      </div>
+
+      <p class="notice" id="handoff-unpublished" hidden>
+        The native converter downloads aren't published yet, so the one-click converter isn't available. You can
+        still build <code>build-lod</code> yourself from Spark's repository and use the command below.
+      </p>
+
+      <div id="handoff-steps">
+        <button type="button" class="btn primary" id="handoff-download">Download converter</button>
+        <ol id="handoff-win">
+          <li>Move the downloaded <strong>.bat</strong> file into the folder that holds your splat file. If you skip this, it asks you to pick the file.</li>
+          <li>Double-click it. If Windows shows a blue “Windows protected your PC” box, click <em>More info</em>, then <em>Run anyway</em>.</li>
+          <li>The first run downloads the converter (about 15 MB). When it finishes, the folder opens with the new <code>.rad</code> selected.</li>
+        </ol>
+        <ol id="handoff-mac" hidden>
+          <li>Double-click the downloaded <strong>.zip</strong> to unzip it, then move the <strong>.command</strong> file next to your splat file. If you skip this, it asks you to pick the file.</li>
+          <li>The first time, right-click the <strong>.command</strong> file, choose <em>Open</em>, then <em>Open</em> again. After that, double-clicking works.</li>
+          <li>The first run downloads the converter (about 15 MB). When it finishes, Finder shows the new <code>.rad</code>.</li>
+        </ol>
+      </div>
+
+      <p class="hint">
+        Easiest of all: open this page with the <strong>Start RAD Converter</strong> launcher. The app then runs the
+        native tool for you, with no extra steps.
+      </p>
+
+      <details class="cmd">
+        <summary>Prefer the terminal? Show the command</summary>
+        <p class="hint">In <span id="handoff-shell"></span>, from the folder that contains your splat file:</p>
+        <div class="cmd-row"><code id="handoff-install"></code><button type="button" class="btn" data-copy="#handoff-install">Copy</button></div>
+        <div class="cmd-row"><code id="handoff-run"></code><button type="button" class="btn" data-copy="#handoff-run">Copy</button></div>
+      </details>
+      <p class="hint" id="handoff-ignored" hidden></p>
+
+      <div class="handoff-actions"><button type="button" class="btn" id="handoff-close">Close</button></div>
+    </div>
+  </dialog>
 
   <dialog id="viewer">
     <div class="viewer-bar">

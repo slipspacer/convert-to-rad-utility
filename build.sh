@@ -25,4 +25,4 @@ RUSTFLAGS="-C target-feature=+simd128,+bulk-memory" \
 "$WB" --target web --no-typescript --out-dir "$ROOT/web/pkg" \
   "$ROOT/rad-wasm/target/wasm32-unknown-unknown/release/rad_wasm.wasm"
 
-echo "Built web/pkg. Serve with: python3 -m http.server 8090 -d web"
+echo "Built web/pkg. Serve with: python3 serve.py"

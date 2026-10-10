@@ -38,4 +38,4 @@ echo
     open "$URL"
 ) &
 
-python3 -m http.server "$PORT" --bind 127.0.0.1 -d web || pause_and_exit
+python3 serve.py --port "$PORT" || pause_and_exit

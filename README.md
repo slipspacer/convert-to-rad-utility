@@ -38,16 +38,52 @@ your default browser. Keep the Terminal window open while you use it; close it t
 downloaded the repo as a ZIP instead of cloning it, macOS may block the first launch: right-click
 the file → **Open** → **Open**.
 
-**Manually:** `web/pkg` ships prebuilt, so you only need a static server (module workers don't run from `file://`):
+**Manually:** `web/pkg` ships prebuilt. Run the local server (module workers don't run from
+`file://`):
 
 ```bash
 # Windows
-py -m http.server 8090 -d web
+py serve.py
 # macOS / Linux
-python3 -m http.server 8090 -d web
+python3 serve.py
 ```
 
-Then open http://localhost:8090. Any static host works (GitHub Pages, Netlify, S3…).
+Then open http://localhost:8090. Any static host (GitHub Pages, Netlify, S3…) or
+`python -m http.server -d web` also works. Without `serve.py`, the native engine falls back to
+one-click converters (see below).
+
+## Native engine (scenes too big for the browser)
+
+Browser WebAssembly is limited to 4 GB of memory. For bigger scenes, set **Engine: Native**, or
+click **Switch to native engine** or **Retry with native engine** on a job. The same conversion
+then runs in Spark's native `build-lod` tool, which has no memory limit.
+
+- **Opened with the launcher (or `serve.py`):** the app runs `build-lod` for you. On first use,
+  `serve.py` downloads the tool for your platform (Windows x64, or macOS universal for Apple Silicon
+  and Intel) from this repo's releases and checks it against the SHA-256 in
+  `web/native/manifest.json`. The file is sent to the local server only, never off your computer.
+  Progress, the log and saving work just as for browser jobs.
+- **Opened any other way:** the job offers a **one-click converter**. On Windows this is a `.bat`;
+  on Mac, a zipped `.command`. It's preset with your settings and the file name. Put it next to
+  the splat file and double-click it. It downloads and verifies the tool on first use, converts,
+  and then shows the `.rad`. The dialog also shows the exact command for terminal users.
+
+| App setting | `build-lod` flag |
+|---|---|
+| Level of detail: Quality / Quick | `--quality` / `--quick` |
+| LoD base | `--bhatt-lod=<b>` / `--tiny-lod=<b>` |
+| Working precision: Compact | `--csplat` |
+| Spherical harmonics limit | `--max-sh=N` |
+| Output: Single / Chunked | `--rad` / `--rad-chunked` |
+| Crop min / max / sphere | `--min-box=x,y,z` / `--max-box=x,y,z` / `--within-dist=x,y,z,r` |
+| Inflate | `--inflate` |
+
+`build-lod` always builds an LoD tree. It can't do "None", per-property encodings, or a forced
+input format, and it rejects files containing NaN splats (the browser engine drops those).
+
+The binaries are built by `.github/workflows/build-lod.yml` from the same pinned Spark commit as
+`rad-wasm`. To use your own build instead, set `RAD_BUILD_LOD=/path/to/build-lod` before starting
+`serve.py`.
 
 ## How it works
 

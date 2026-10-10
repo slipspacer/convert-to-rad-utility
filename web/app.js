@@ -1,3 +1,8 @@
+import {
+  native, probeNative, buildLodFlags, nativeBlocker, nativeIgnored, runNativeJob, discardNativeJob,
+  detectOS, terminalCommands, oneClickScript, binariesPublished, nativeOutputName,
+} from "./native.js";
+
 const $ = (sel, root = document) => root.querySelector(sel);
 const form = $(".settings");
 const SETTINGS_KEY = "rad-converter.settings.v1";
@@ -15,6 +20,14 @@ const HINTS = {
   precision: {
     standard: "Full float precision while building the LoD tree (Spark's gsplat; default).",
     compact: "Compact in-memory splats (Spark's csplat): less RAM for very large scenes, slightly lossy.",
+  },
+  engine: {
+    browser: "Runs inside this page. Handles scenes up to roughly 15–24M splats, depending on settings.",
+    get native() {
+      if (native.mode === "server") return "Runs Spark's native build-lod on this computer, with no memory limit. The first use downloads it (about 15 MB).";
+      if (native.mode === "unsupported") return "The native tool is available for Windows and macOS only.";
+      return "Runs Spark's native build-lod on this computer, with no memory limit. Each file gets a one-click converter to run. Open this page with the Start RAD Converter launcher to have it run automatically.";
+    },
   },
 };
 
@@ -78,6 +91,7 @@ function buildJobSettings(s) {
   if (lodBase !== undefined && !(lodBase >= 1.1 && lodBase <= 16)) throw new Error("LoD base must be between 1.1 and 16");
   return {
     compact: s.precision === "compact",
+    engine: s.engine,
     repack: s.repack,
     fileType: s.fileType,
     chunked: s.output === "chunked",
@@ -128,6 +142,8 @@ function download(blob, name) {
 }
 
 const STAGE_LABEL = {
+  install: "Installing the native engine (first use only)",
+  upload: "Sending the file to the native engine",
   decode: "Reading & decoding",
   repack: "Moving splats to fresh memory",
   lod: "Building LoD tree",
@@ -166,12 +182,13 @@ function createJob(file, settings) {
       name: $(".name", el), meta: $(".meta", el), chip: $(".chip", el), bar: $(".bar", el), fill: $(".fill", el),
       stage: $(".stage", el), stats: $(".stats", el), error: $(".error", el), log: $(".log", el),
       save: $(".save", el), saved: $(".saved", el), download: $(".download", el), preview: $(".preview", el), cancel: $(".cancel", el), logToggle: $(".log-toggle", el),
+      native: $(".native-switch", el),
     },
   };
   const { ui } = job;
   ui.name.textContent = file.name;
   const lodLabel = { quality: "quality LoD", quick: "quick LoD", none: "no LoD" }[settings.process.lod];
-  ui.meta.textContent = `${fmtBytes(file.size)} · ${lodLabel}${settings.chunked ? " · chunked" : ""}${settings.compact ? " · compact" : ""}`;
+  ui.meta.textContent = metaText(file, settings);
   setState(job, "queued");
   ui.stage.textContent = "Waiting…";
 
@@ -183,27 +200,72 @@ function createJob(file, settings) {
   ui.download.addEventListener("click", () => downloadJob(job));
   ui.save.addEventListener("click", () => saveJobAs(job));
   ui.preview.addEventListener("click", () => openPreview(job));
+  ui.native.addEventListener("click", () => switchToNative(job));
   return job;
+}
+
+function metaText(file, settings) {
+  const lodLabel = { quality: "quality LoD", quick: "quick LoD", none: "no LoD" }[settings.process.lod];
+  return `${fmtBytes(file.size)} · ${lodLabel}${settings.chunked ? " · chunked" : ""}${settings.compact ? " · compact" : ""}` +
+    `${settings.engine === "native" ? " · native engine" : ""}`;
+}
+
+function showNativeButton(job, label) {
+  if (nativeBlocker(job.settings, job.file.name) || native.mode === "unsupported") return;
+  job.ui.native.textContent = label;
+  job.ui.native.hidden = false;
+}
+
+// Re-run a job (running in the browser, failed, or flagged too large) natively.
+function switchToNative(job) {
+  const blocker = nativeBlocker(job.settings, job.file.name);
+  if (blocker) return alert(blocker);
+  if (native.mode !== "server") return openHandoff(job);
+  if (job.state === "running") {
+    job.worker?.terminate();
+    job.worker = null;
+    job.resolve?.();
+  }
+  job.settings = { ...job.settings, engine: "native" };
+  job.ui.meta.textContent = metaText(job.file, job.settings);
+  resetJobUi(job);
+  appendLog(job, "--- Switching to the native engine ---");
+  setState(job, "queued");
+  job.ui.stage.textContent = "Waiting…";
+  pump();
+}
+
+function resetJobUi(job) {
+  const { ui } = job;
+  for (const el of [ui.error, ui.stats, ui.saved, ui.save, ui.download, ui.preview, ui.native]) el.hidden = true;
+  ui.bar.classList.remove("indet");
+  ui.fill.style.width = "0";
+  job.result = job.processed = job.input = null;
 }
 
 function setState(job, state) {
   job.state = state;
   job.el.dataset.state = state;
-  job.ui.chip.textContent = { queued: "Queued", running: "Converting", done: "Done", error: "Failed", cancelled: "Cancelled" }[state];
+  job.ui.chip.textContent = { queued: "Queued", running: "Converting", done: "Done", error: "Failed", cancelled: "Cancelled", handoff: "Use native tool" }[state];
   job.ui.cancel.hidden = !(state === "queued" || state === "running");
 }
 
 function setProgress(job, stage, progress) {
   const { ui } = job;
   ui.stage.textContent = STAGE_LABEL[stage] ?? stage;
-  // Map stages onto one bar: decode 0–20%, repack 20–25%, lod 25–85%, encode 85–100%
-  const span = { decode: [0, 0.2], repack: [0.2, 0.25], lod: [0.25, 0.85], chunk: [0.85, 0.88], encode: [0.88, 1] }[stage] ?? [0, 1];
+  // Map stages onto one bar: decode 0–20%, repack 20–25%, lod 25–85%, encode 85–100%.
+  // Native jobs install/upload first and decode inside build-lod.
+  const spans = job.settings.engine === "native"
+    ? { install: [0, 0.05], upload: [0.05, 0.2], decode: [0.2, 0.25], lod: [0.25, 0.88], encode: [0.88, 1] }
+    : { decode: [0, 0.2], repack: [0.2, 0.25], lod: [0.25, 0.85], chunk: [0.85, 0.88], encode: [0.88, 1] };
+  const span = spans[stage] ?? [0, 1];
   if (progress == null) {
     ui.bar.classList.add("indet");
   } else {
     ui.bar.classList.remove("indet");
     ui.fill.style.width = `${(span[0] + (span[1] - span[0]) * Math.min(1, progress)) * 100}%`;
     if (stage !== "decode" && progress < 1) ui.stage.textContent += ` · ${Math.round(progress * 100)}%`;
+    if (stage === "decode" && job.settings.engine === "native") ui.bar.classList.add("indet");
   }
 }
 
@@ -231,8 +293,59 @@ function runJob(job) {
     setState(job, "running");
     job.resolve = resolve;
     const settings = { ...job.settings, baseName: baseName(job.file.name) };
-    startWorker(job, { file: job.file, settings }, resolve);
+    if (settings.engine === "native") runNative(job, settings, resolve);
+    else startWorker(job, { file: job.file, settings }, resolve);
   });
+}
+
+async function runNative(job, settings, resolve) {
+  const blocker = nativeBlocker(settings, job.file.name);
+  if (blocker) {
+    fail(job, blocker);
+    return resolve();
+  }
+  if (native.mode === "unsupported") {
+    fail(job, "The native tool is available for Windows and macOS only. Switch Engine to Browser.");
+    return resolve();
+  }
+  if (native.mode !== "server") {
+    // No local server to run it: hand the job to a one-click converter.
+    setState(job, "handoff");
+    job.ui.stage.textContent = "Too big for the browser? Run it with the native tool on this computer.";
+    showNativeButton(job, "Get the one-click converter…");
+    job.ui.native.hidden = false;
+    resolve();
+    if (!handoff.open) openHandoff(job);
+    return;
+  }
+  const ignored = nativeIgnored(settings);
+  appendLog(job, `$ build-lod ${buildLodFlags(settings).join(" ")} "${job.file.name}"`);
+  if (ignored.length) appendLog(job, `Note: the native tool ignores ${ignored.join(" and ")}.`);
+  const t0 = performance.now();
+  const run = runNativeJob(job.file, settings, {
+    stage: (stage, progress) => job.state === "running" && setProgress(job, stage, progress),
+    log: (line) => appendLog(job, line),
+    input: (input) => { job.input = input; },
+  });
+  job.nativeRun = run;
+  try {
+    const result = await run.promise;
+    if (!result || job.state !== "running") return;
+    job.nativeId = result.id;
+    const meta = result.meta ?? {};
+    job.input ??= { fileType: "input", splatCount: 0, shDegree: meta.maxSh ?? 0 };
+    job.processed = { splatCount: meta.count ?? 0, shDegree: meta.maxSh ?? 0, hasLod: Boolean(meta.lodTree) };
+    complete(job, {
+      files: result.files.map((f) => ({ name: f.name, size: f.size, url: f.url })),
+      timings: { total: performance.now() - t0, native: result.seconds * 1000 },
+      encoding: meta.splatEncoding ?? null,
+    });
+  } catch (err) {
+    if (err?.name !== "AbortError" && job.state === "running") fail(job, err.message ?? String(err));
+  } finally {
+    job.nativeRun = null;
+    resolve();
+  }
 }
 
 // Each worker owns one WASM instance. A job may hop to a second, fresh worker
@@ -267,8 +380,15 @@ function startWorker(job, payload, resolve, transfer = []) {
         job.ui.error.hidden = false;
         job.ui.error.style.color = "var(--accent)";
         job.ui.error.textContent = data.message;
+        showNativeButton(job, "Switch to native engine");
         break;
-      case "done": complete(job, data); finish(); break;
+      case "done": {
+        const radName = `${baseName(job.file.name)}${job.processed?.hasLod ? "-lod" : ""}.rad`;
+        const files = data.files.map((bytes, i) => ({ name: i === 0 ? radName : data.names[i], size: bytes.byteLength, bytes }));
+        complete(job, { files, timings: data.timings, encoding: data.encoding });
+        finish();
+        break;
+      }
       case "error": fail(job, data.message); finish(); break;
     }
   };
@@ -284,9 +404,14 @@ function fail(job, message) {
   job.ui.error.style.color = "";
   job.ui.error.textContent = message;
   appendLog(job, `ERROR: ${message}`);
+  if (/^Out of memory/.test(message) && job.settings.engine !== "native") showNativeButton(job, "Retry with native engine");
 }
 
 function cancelJob(job) {
+  if (job.state === "running" && job.nativeRun) {
+    job.nativeRun.cancel();
+    job.nativeRun = null;
+  }
   if (job.state === "running" && job.worker) {
     job.worker.terminate();
     job.worker = null;
@@ -299,14 +424,14 @@ function cancelJob(job) {
   }
 }
 
+// files: [{ name, size, bytes? , url? }] - browser results carry bytes; native
+// results stay on the local server until saved (streamed, never fully in memory).
 function complete(job, data) {
   const { ui } = job;
-  const base = baseName(job.file.name);
-  const suffix = job.processed?.hasLod ? "-lod" : "";
-  const radName = `${base}${suffix}.rad`;
-  const files = data.files.map((bytes, i) => ({ name: i === 0 ? radName : data.names[i], bytes }));
-  job.result = { files, radName, base: `${base}${suffix}`, encoding: data.encoding, timings: data.timings };
-  const outBytes = files.reduce((n, f) => n + f.bytes.byteLength, 0);
+  const files = data.files;
+  const radName = files[0].name;
+  job.result = { files, radName, base: radName.replace(/\.rad$/i, ""), encoding: data.encoding, timings: data.timings };
+  const outBytes = files.reduce((n, f) => n + f.size, 0);
 
   setState(job, "done");
   ui.error.hidden = true; // clear any large-scene warning
@@ -332,6 +457,7 @@ function complete(job, data) {
     return d;
   }));
   ui.stats.hidden = false;
+  ui.native.hidden = true;
   ui.download.hidden = false;
   ui.download.textContent = files.length > 1 ? "Download .zip" : "Download .rad";
   updateSaveButtons(job);
@@ -339,14 +465,48 @@ function complete(job, data) {
   // Chunked headers reference .radc files by relative name, which can't be
   // resolved from in-memory bytes, so only single-file output is previewable.
   ui.preview.hidden = files.length > 1;
-  appendLog(job, `Resolved encoding: ${JSON.stringify(data.encoding)}`);
-  appendLog(job, `Timings: decode ${fmtTime(data.timings.decode)}, LoD ${fmtTime(data.timings.lod)}, encode ${fmtTime(data.timings.encode)}`);
+  if (data.encoding) appendLog(job, `Resolved encoding: ${JSON.stringify(data.encoding)}`);
+  const t = data.timings;
+  appendLog(job, t.native != null
+    ? `Timings: native build-lod ${fmtTime(t.native)}, total ${fmtTime(t.total)}`
+    : `Timings: decode ${fmtTime(t.decode)}, LoD ${fmtTime(t.lod)}, encode ${fmtTime(t.encode)}`);
+}
+
+async function fileBytes(file) {
+  if (file.bytes) return file.bytes;
+  const res = await fetch(file.url);
+  if (!res.ok) throw new Error(`Couldn't read ${file.name} from the native engine (${res.status})`);
+  return new Uint8Array(await res.arrayBuffer());
+}
+
+// Write a result file through a FileSystemWritableFileStream, streaming
+// native results straight from the local server.
+async function writeResult(writable, file) {
+  if (file.bytes) {
+    await writable.write(file.bytes);
+    await writable.close();
+    return;
+  }
+  const res = await fetch(file.url);
+  if (!res.ok) {
+    await writable.abort();
+    throw new Error(`Couldn't read ${file.name} from the native engine (${res.status})`);
+  }
+  await res.body.pipeTo(writable); // closes the writable when done
 }
 
 async function downloadJob(job) {
   const { files, radName, base } = job.result;
   if (files.length === 1) {
-    download(new Blob([files[0].bytes], { type: "application/octet-stream" }), radName);
+    if (files[0].url) {
+      // Served with Content-Disposition, so the browser saves it without loading it into the page.
+      const a = Object.assign(document.createElement("a"), { href: files[0].url, download: radName });
+      document.body.append(a);
+      a.click();
+      a.remove();
+    } else {
+      download(new Blob([files[0].bytes], { type: "application/octet-stream" }), radName);
+    }
     return;
   }
   job.ui.download.disabled = true;
@@ -354,7 +514,7 @@ async function downloadJob(job) {
     const { zipSync } = await import("fflate");
     const entries = {};
     // Chunks are already deflate-compressed per property; store without recompressing.
-    for (const f of files) entries[f.name] = [f.bytes, { level: 0 }];
+    for (const f of files) entries[f.name] = [await fileBytes(f), { level: 0 }];
     download(new Blob([zipSync(entries)], { type: "application/zip" }), `${base}-rad.zip`);
   } finally {
     job.ui.download.disabled = false;
@@ -363,7 +523,8 @@ async function downloadJob(job) {
 
 $("#clear-done").addEventListener("click", () => {
   for (const job of [...jobs]) {
-    if (job.state === "done" || job.state === "error" || job.state === "cancelled") {
+    if (["done", "error", "cancelled", "handoff"].includes(job.state)) {
+      discardNativeJob(job.nativeId);
       job.el.remove();
       jobs.splice(jobs.indexOf(job), 1);
     }
@@ -511,11 +672,9 @@ async function freeName(dir, name, kind) {
   }
 }
 
-async function writeFile(dir, name, bytes) {
+async function writeFile(dir, name, file) {
   const fh = await dir.getFileHandle(name, { create: true });
-  const w = await fh.createWritable();
-  await w.write(bytes);
-  await w.close();
+  await writeResult(await fh.createWritable(), file);
 }
 
 // Chunked output is a .rad header plus .radc chunks it references by name;
@@ -523,7 +682,7 @@ async function writeFile(dir, name, bytes) {
 async function writeChunked(dir, job) {
   const { files, base } = job.result;
   const sub = await dir.getDirectoryHandle(await freeName(dir, base, "dir"), { create: true });
-  for (const f of files) await writeFile(sub, f.name, f.bytes);
+  for (const f of files) await writeFile(sub, f.name, f);
   return `${dir.name}/${sub.name}/ (${files.length} files)`;
 }
 
@@ -541,7 +700,7 @@ async function autoSave(job) {
       job.savedTo = await writeChunked(outDir, job);
     } else {
       const name = await freeName(outDir, job.result.radName, "file");
-      await writeFile(outDir, name, job.result.files[0].bytes);
+      await writeFile(outDir, name, job.result.files[0]);
       job.savedTo = `${outDir.name}/${name}`;
     }
     showSaved(job, `Saved to ${job.savedTo}`);
@@ -566,9 +725,7 @@ async function saveJobAs(job) {
         types: [{ description: "Spark RAD splats", accept: { "application/octet-stream": [".rad"] } }],
       });
       await ensureWritable(fh);
-      const w = await fh.createWritable();
-      await w.write(files[0].bytes);
-      await w.close();
+      await writeResult(await fh.createWritable(), files[0]);
       job.savedTo = fh.name;
     }
     showSaved(job, `Saved to ${job.savedTo}`);
@@ -646,7 +803,7 @@ async function openPreview(job) {
     if (v.mesh) { v.scene.remove(v.mesh); v.mesh.dispose?.(); v.mesh = null; }
     status.textContent = "Loading splats…";
 
-    const bytes = job.result.files[0].bytes;
+    const bytes = await fileBytes(job.result.files[0]);
     const mesh = new v.SplatMesh({ fileBytes: bytes.slice(), fileName: job.result.radName });
     v.mesh = mesh;
     mesh.quaternion.set(v.flipped ? 1 : 0, 0, 0, v.flipped ? 0 : 1);
@@ -654,8 +811,16 @@ async function openPreview(job) {
     await mesh.initialized;
 
     // Frame the camera on the robust (2–98th percentile) bounds computed during conversion.
+    let min, max;
     const b = job.processed.bounds;
-    const min = new v.THREE.Vector3(...b.min), max = new v.THREE.Vector3(...b.max);
+    if (b) {
+      min = new v.THREE.Vector3(...b.min);
+      max = new v.THREE.Vector3(...b.max);
+    } else {
+      const box = mesh.getBoundingBox(true); // native results: bounds from the splats
+      min = box.min;
+      max = box.max;
+    }
     const center = min.clone().add(max).multiplyScalar(0.5).applyQuaternion(mesh.quaternion);
     const radius = Math.max(1e-3, min.distanceTo(max) / 2);
     v.controls.target.copy(center);
@@ -691,4 +856,61 @@ dialog.addEventListener("close", () => {
   if (!viewer) return;
   viewer.renderer.setAnimationLoop(null);
   if (viewer.mesh) { viewer.scene.remove(viewer.mesh); viewer.mesh.dispose?.(); viewer.mesh = null; }
+});
+
+// ---------- native hand-off (page not opened through the launcher) ----------
+
+const handoff = $("#handoff");
+
+async function openHandoff(job) {
+  const settings = job.settings;
+  const os = detectOS() === "mac" ? "mac" : "windows";
+  const fileName = job.file.name;
+  $("#handoff-file").textContent = fileName;
+  $("#handoff-output").textContent = nativeOutputName(fileName);
+  const published = binariesPublished();
+  $("#handoff-unpublished").hidden = published;
+  $("#handoff-steps").hidden = !published;
+
+  const render = (target) => {
+    for (const tab of handoff.querySelectorAll("[data-os]")) tab.setAttribute("aria-selected", String(tab.dataset.os === target));
+    $("#handoff-win").hidden = target !== "windows";
+    $("#handoff-mac").hidden = target !== "mac";
+    const cmd = terminalCommands(target, settings, fileName);
+    $("#handoff-shell").textContent = cmd.shell;
+    $("#handoff-install").textContent = cmd.install;
+    $("#handoff-run").textContent = cmd.run;
+    const btn = $("#handoff-download");
+    btn.textContent = target === "windows" ? "Download converter for Windows" : "Download converter for Mac";
+    btn.onclick = async () => {
+      const script = await oneClickScript(target, settings, fileName);
+      download(script.blob, script.name);
+    };
+  };
+  for (const tab of handoff.querySelectorAll("[data-os]")) tab.onclick = () => render(tab.dataset.os);
+  render(os);
+
+  const ignored = nativeIgnored(settings);
+  $("#handoff-ignored").hidden = !ignored.length;
+  $("#handoff-ignored").textContent = ignored.length ? `Note: the native tool ignores ${ignored.join(" and ")}.` : "";
+  handoff.showModal();
+}
+
+for (const btn of document.querySelectorAll("#handoff [data-copy]")) {
+  btn.addEventListener("click", async () => {
+    const text = $(btn.dataset.copy).textContent;
+    try {
+      await navigator.clipboard.writeText(text);
+      btn.textContent = "Copied";
+      setTimeout(() => (btn.textContent = "Copy"), 1500);
+    } catch {
+      alert(text);
+    }
+  });
+}
+$("#handoff-close").addEventListener("click", () => handoff.close());
+
+probeNative().then(() => {
+  document.body.dataset.native = native.mode;
+  updateHints();
 });

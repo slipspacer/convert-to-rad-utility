@@ -1,0 +1,94 @@
+# Builds Spark's native build-lod tool for the RAD Converter's native engine
+# and publishes it as a GitHub release. serve.py and the generated one-click
+# converters download these binaries and check them against the SHA-256 values
+# in web/native/manifest.json (update those after a new release).
+name: build-lod binaries
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["build-lod-*"]
+
+env:
+  # Keep in sync with rad-wasm/Cargo.toml and web/native/manifest.json.
+  SPARK_REV: c57ebb936a5d364e021a66a118204d599f6fdaa8
+  TAG: build-lod-c57ebb9
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - name: Check out Spark at the pinned commit
+        shell: bash
+        run: |
+          git init spark && cd spark
+          git remote add origin https://github.com/sparkjsdev/spark.git
+          git fetch --depth 1 origin "$SPARK_REV"
+          git checkout --quiet FETCH_HEAD
+      - name: Build
+        shell: bash
+        working-directory: spark/rust
+        run: cargo build --release --locked -p build-lod
+      - name: Collect
+        shell: bash
+        run: mkdir dist && cp spark/rust/target/release/build-lod.exe dist/build-lod-windows-x64.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/
+
+  macos:
+    runs-on: macos-14
+    steps:
+      - name: Check out Spark at the pinned commit
+        run: |
+          git init spark && cd spark
+          git remote add origin https://github.com/sparkjsdev/spark.git
+          git fetch --depth 1 origin "$SPARK_REV"
+          git checkout --quiet FETCH_HEAD
+      - name: Build Apple Silicon and Intel
+        working-directory: spark/rust
+        run: |
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+          cargo build --release --locked -p build-lod --target aarch64-apple-darwin
+          cargo build --release --locked -p build-lod --target x86_64-apple-darwin
+      - name: Universal binary
+        run: |
+          mkdir dist
+          lipo -create -output dist/build-lod-macos-universal \
+            spark/rust/target/aarch64-apple-darwin/release/build-lod \
+            spark/rust/target/x86_64-apple-darwin/release/build-lod
+          codesign --force --sign - dist/build-lod-macos-universal
+          chmod +x dist/build-lod-macos-universal
+          lipo -info dist/build-lod-macos-universal
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: dist/
+
+  release:
+    needs: [windows, macos]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        working-directory: dist
+        run: |
+          sha256sum build-lod-windows-x64.exe build-lod-macos-universal > SHA256SUMS
+          cat SHA256SUMS
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          notes="Spark's build-lod at sparkjsdev/spark@${SPARK_REV}, built by CI for the RAD Converter's native engine."
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --title "Native build-lod (${TAG})" --notes "$notes"
+          fi

@@ -169,3 +169,24 @@ dialog::backdrop { background: rgb(0 0 0 / 0.55); }
 #viewer-canvas { flex: 1; min-height: 0; position: relative; }
 #viewer-canvas canvas { display: block; width: 100%; height: 100%; }
 .viewer-hint { margin: 0; padding: 6px 12px; font-size: 0.75rem; color: #9c988e; background: #1b1b19; }
+
+/* native hand-off */
+dialog#handoff {
+  width: min(640px, calc(100vw - 32px)); max-height: calc(100vh - 32px);
+  padding: 0; border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--surface); color: var(--text);
+}
+.handoff-body { padding: 22px 22px 16px; overflow-wrap: anywhere; }
+.handoff-body h2 { font-size: 1.15rem; text-transform: none; letter-spacing: 0; color: var(--text); margin-bottom: 10px; }
+.handoff-body p { margin: 0 0 12px; }
+.handoff-body ol { margin: 12px 0 14px; padding-left: 20px; }
+.handoff-body li { margin-bottom: 8px; }
+.os-tabs { display: inline-flex; background: var(--surface-2); border-radius: 8px; padding: 3px; gap: 2px; margin-bottom: 14px; }
+.os-tabs button { border: 0; background: none; color: var(--muted); padding: 5px 14px; border-radius: 6px; font-size: 0.85rem; }
+.os-tabs button[aria-selected="true"] { background: var(--surface); color: var(--text); font-weight: 600; box-shadow: 0 1px 2px rgb(0 0 0 / 0.12); }
+.notice { background: color-mix(in srgb, var(--accent) 12%, var(--surface)); border-radius: 8px; padding: 10px 12px; font-size: 0.88rem; }
+details.cmd { border-top: 1px solid var(--border); padding-top: 12px; margin-top: 4px; }
+details.cmd summary { cursor: pointer; font-weight: 600; font-size: 0.9rem; margin-bottom: 8px; }
+.cmd-row { display: flex; gap: 8px; align-items: flex-start; margin-bottom: 8px; }
+.cmd-row code { flex: 1; min-width: 0; display: block; padding: 8px 10px; white-space: pre-wrap; word-break: break-all; font-size: 0.8rem; }
+.handoff-actions { display: flex; justify-content: flex-end; margin-top: 8px; }

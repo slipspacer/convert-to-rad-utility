@@ -43,7 +43,7 @@ rem Open the browser after a short delay so the server is listening first.
 start "" /b cmd /c "timeout /t 2 /nobreak >nul & start %OPENER% %URL%"
 
 :serve
-%PY% -m http.server %PORT% --bind 127.0.0.1 -d web
+%PY% serve.py --port %PORT%
 if errorlevel 1 (
   echo.
   echo The server stopped with an error.
