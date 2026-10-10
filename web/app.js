@@ -308,11 +308,10 @@ function complete(job, data) {
     return d;
   }));
   ui.stats.hidden = false;
-  ui.save.hidden = !FS;
-  ui.download.hidden = FS;
+  ui.download.hidden = false;
   ui.download.textContent = files.length > 1 ? "Download .zip" : "Download .rad";
-  ui.download.classList.toggle("primary", !FS);
-  if (FS && outDir) autoSave(job);
+  updateSaveButtons(job);
+  if (canPick() && outDir) autoSave(job);
   // Chunked headers reference .radc files by relative name, which can't be
   // resolved from in-memory bytes, so only single-file output is previewable.
   ui.preview.hidden = files.length > 1;
@@ -355,6 +354,41 @@ $("#clear-done").addEventListener("click", () => {
 const FS = "showSaveFilePicker" in window && "showDirectoryPicker" in window;
 let outDir = null; // FileSystemDirectoryHandle with readwrite access
 let pendingDir = null; // remembered from a previous visit, needs re-approval
+// Some browsers expose the pickers but refuse to write to disk (embedded
+// browsers, Brave, enterprise policy). Once that happens, use downloads.
+let fsBlocked = false;
+const canPick = () => FS && !fsBlocked;
+const isBlocked = (err) => err?.name === "NotAllowedError" || err?.name === "SecurityError";
+
+function updateSaveButtons(job) {
+  if (!job.result) return;
+  job.ui.save.hidden = !canPick();
+  job.ui.download.classList.toggle("primary", !canPick());
+}
+
+// Make sure we may write through a handle, asking the user if needed.
+async function ensureWritable(handle) {
+  const opts = { mode: "readwrite" };
+  if (!handle.queryPermission || (await handle.queryPermission(opts)) === "granted") return;
+  if ((await handle.requestPermission(opts)) !== "granted") {
+    throw new DOMException("Permission to write there was not granted", "NotAllowedError");
+  }
+}
+
+// Writing was refused: remember that, switch the UI to downloads, and
+// download this result so the conversion isn't lost.
+function fallBackToDownload(job, err) {
+  fsBlocked = true;
+  outDir = pendingDir = null;
+  renderFolder();
+  for (const j of jobs) updateSaveButtons(j);
+  downloadJob(job);
+  showSaved(
+    job,
+    `This browser wouldn't let the page write to the location you picked (${err.message}), so the file was downloaded to your Downloads folder instead. Desktop Chrome or Edge can save straight to a folder you choose.`,
+    true,
+  );
+}
 
 function idb(mode, fn) {
   return new Promise((resolve, reject) => {
@@ -373,10 +407,13 @@ const rememberDir = (h) => idb("readwrite", (s) => (h ? s.put(h, "outDir") : s.d
 
 function renderFolder() {
   const name = $("#folder-name");
-  if (!FS) {
+  if (!canPick()) {
+    name.parentElement.classList.remove("set");
     name.textContent = "Your Downloads folder";
-    $("#pick-folder").hidden = true;
-    $("#save-hint").textContent = "Choosing a save location needs Chrome, Edge or another Chromium browser. In this browser, results download normally.";
+    for (const id of ["#pick-folder", "#reconnect-folder", "#clear-folder"]) $(id).hidden = true;
+    $("#save-hint").textContent = fsBlocked
+      ? "This browser blocked saving to a chosen location, so results download normally. Open the page in desktop Chrome or Edge to pick a folder."
+      : "Choosing a save location needs Chrome, Edge or another Chromium browser. In this browser, results download normally.";
     return;
   }
   const dir = outDir ?? pendingDir;
@@ -475,6 +512,7 @@ function showSaved(job, text, isError = false) {
 
 async function autoSave(job) {
   try {
+    await ensureWritable(outDir);
     if (job.result.files.length > 1) {
       job.savedTo = await writeChunked(outDir, job);
     } else {
@@ -484,7 +522,8 @@ async function autoSave(job) {
     }
     showSaved(job, `Saved to ${job.savedTo}`);
   } catch (err) {
-    showSaved(job, `Couldn't save to ${outDir.name}: ${err.message}. Use “Save as…” instead.`, true);
+    if (isBlocked(err)) fallBackToDownload(job, err);
+    else showSaved(job, `Couldn't save to ${outDir?.name}: ${err.message}. Use “Save as…” or Download instead.`, true);
   }
 }
 
@@ -493,6 +532,7 @@ async function saveJobAs(job) {
   try {
     if (files.length > 1) {
       const dir = await window.showDirectoryPicker({ id: "rad-output", mode: "readwrite", startIn: outDir ?? "downloads" });
+      await ensureWritable(dir);
       job.savedTo = await writeChunked(dir, job);
     } else {
       const fh = await window.showSaveFilePicker({
@@ -501,6 +541,7 @@ async function saveJobAs(job) {
         startIn: outDir ?? "downloads",
         types: [{ description: "Spark RAD splats", accept: { "application/octet-stream": [".rad"] } }],
       });
+      await ensureWritable(fh);
       const w = await fh.createWritable();
       await w.write(files[0].bytes);
       await w.close();
@@ -508,7 +549,9 @@ async function saveJobAs(job) {
     }
     showSaved(job, `Saved to ${job.savedTo}`);
   } catch (err) {
-    if (err.name !== "AbortError") showSaved(job, `Save failed: ${err.message}`, true);
+    if (err.name === "AbortError") return; // user closed the dialog
+    if (isBlocked(err)) fallBackToDownload(job, err);
+    else showSaved(job, `Save failed: ${err.message}`, true);
   }
 }
 
