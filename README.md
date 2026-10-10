@@ -181,6 +181,8 @@ those splats cover from the camera.
 file size and memory. Results depend on window size and GPU, so always measure on the target
 device and window size.
 
+Full measurements, per-file analysis and next steps: [docs/PERFORMANCE.md](docs/PERFORMANCE.md).
+
 ### Scenes with several splat files (including mixed SOG + RAD)
 
 A scene can hold any number of splat files, and formats can be mixed. Each file is its own
