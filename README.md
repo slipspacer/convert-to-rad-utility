@@ -128,19 +128,35 @@ install `wasm-bindgen-cli` 0.2.117 if they are missing.
 
 ## Limits
 
-- **Memory: browser WebAssembly is capped at 4 GB.** These results are for a 24M-splat scene with
-  SH degree 0 (Spark's LoD build is the bottleneck):
+- **Browser engine memory is capped at 4 GB** (a WebAssembly limit). Spark's LoD build is the
+  bottleneck. Results for 23–24M-splat scenes with SH degree 0:
 
-  | Settings | 24M splats |
-  |---|---|
-  | Compact + Quick | ✅ fits (peak ~3.97 GB, about 2.5 minutes) |
-  | Standard + Quick | ❌ runs out of memory in the final reorder |
-  | Standard + Quality | ❌ finishes merging but runs out of memory while pruning |
+  | Settings | Browser engine | Native engine |
+  |---|---|---|
+  | Compact + Quick | ✅ fits (peak ~3.97 GB, about 2.5 minutes) | ✅ |
+  | Standard + Quick | ❌ runs out of memory in the final reorder | ✅ |
+  | Standard + Quality | ❌ finishes merging but runs out of memory while pruning | ✅ 8–22 minutes, ~4 GB RAM |
 
-  As a rule of thumb, Compact + Quick handles roughly 24M splats. Standard and Quality fit
-  noticeably fewer; the converter warns right after decoding if a scene looks too big. Higher SH
-  degrees need proportionally more memory. For bigger scenes, crop them, or use Spark's native
-  `build-lod` CLI, which has no memory cap.
+  As a rule of thumb, the browser engine handles roughly 24M splats with Compact + Quick, and
+  noticeably fewer with Standard or Quality. Higher SH degrees need proportionally more memory.
+  After decoding, the converter warns if a scene looks too big and offers **Switch to native
+  engine**. Out-of-memory failures offer **Retry with native engine**.
+- **The native engine has no memory cap**, only your computer's RAM. Real example: `trogir.ply`
+  (23.1M splats, Standard + Quality) took 8.4 minutes and peaked at about 4 GB of RAM. It produced
+  33.7M splats with the LoD tree, a 595 MB `.rad`. Plan on roughly 2× the input file size in free
+  RAM for Quality builds.
+  - **One-click needs the launcher.** The native engine needs **Start RAD Converter** (or
+    `serve.py`) for in-app conversion. Otherwise it falls back to one-click converters, which need
+    an internet connection on first use to download `build-lod`.
+  - **Not every setting carries over.** It can't do LoD "None", per-property encodings or a
+    forced input format. RAD inputs that already have an LoD tree stay in the browser engine.
+  - **It refuses invalid splats.** Spark's `build-lod` rejects files with NaN splats, which the
+    browser engine silently drops. Convert those in the browser, or clean the file first.
+  - **Output can differ very slightly.** The native and browser engines produce the same format
+    and encodings, but floating-point rounding differs between builds, so the LoD tree can vary by
+    a few hundredths of a percent in splat count.
+  - **Mac is unverified on real hardware.** The Mac launcher, native binary and one-click converter
+    are built and tested on Windows. Report anything odd.
 - **Large or compressed inputs are moved to fresh memory before the LoD build.** WebAssembly
   memory never shrinks, and some decoders use a lot of temporary space. Reading a SOG uses about
   3× the memory of the same scene as a PLY. So after decoding, the converter copies the splats
