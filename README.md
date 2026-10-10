@@ -28,6 +28,10 @@ browsers). Firefox and Safari fall back to normal downloads, with chunked output
 
 ## Run
 
+**Windows:** double-click **`Start RAD Converter.bat`**. Same behavior as the macOS launcher below;
+it needs Python 3 from [python.org](https://www.python.org/downloads/). If Windows SmartScreen warns
+on first launch, choose **More info** → **Run anyway**.
+
 **macOS:** double-click **`Start RAD Converter.command`** in Finder. It starts a local server (on
 port 8090, or the next free one) and opens the converter in Chrome or Edge if installed, otherwise
 your default browser. Keep the Terminal window open while you use it; close it to stop. If you
