@@ -28,7 +28,13 @@ browsers). Firefox and Safari fall back to normal downloads, with chunked output
 
 ## Run
 
-`web/pkg` ships prebuilt, so you only need a static server (module workers don't run from `file://`):
+**macOS:** double-click **`Start RAD Converter.command`** in Finder. It starts a local server (on
+port 8090, or the next free one) and opens the converter in Chrome or Edge if installed, otherwise
+your default browser. Keep the Terminal window open while you use it; close it to stop. If you
+downloaded the repo as a ZIP instead of cloning it, macOS may block the first launch: right-click
+the file → **Open** → **Open**.
+
+**Manually:** `web/pkg` ships prebuilt, so you only need a static server (module workers don't run from `file://`):
 
 ```bash
 # Windows
