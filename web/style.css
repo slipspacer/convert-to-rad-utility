@@ -202,7 +202,8 @@ body.viewer-page { height: 100vh; height: 100dvh; display: flex; flex-direction:
 }
 .vbrand { display: flex; align-items: center; gap: 8px; color: var(--text); text-decoration: none; font-weight: 700; font-size: 1.05rem; }
 .vlogo img { display: block; height: 22px; width: auto; }
-.vbrand span { padding-left: 10px; border-left: 1px solid var(--border); }
+.vtitle { padding-left: 10px; border-left: 1px solid var(--border); color: var(--text); text-decoration: none; }
+.vtitle:hover { color: var(--accent); }
 .vnav a { font-size: 0.88rem; }
 .vgroup { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .vopen { position: relative; overflow: hidden; display: inline-flex; align-items: center; }
