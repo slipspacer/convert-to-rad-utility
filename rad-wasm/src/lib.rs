@@ -112,8 +112,204 @@ fn robust_bounds<TA: TsplatArray>(splats: &TA) -> Value {
     json!({ "min": min, "max": max })
 }
 
-trait SplatArray:SplatReceiver + SplatGetter + TsplatArray + 'static {}
-impl<T: SplatReceiver + SplatGetter + TsplatArray + 'static> SplatArray for T {}
+#[cfg(test)]
+fn robust_bounds_vec<TA: TsplatArray>(splats: &TA) -> ([f32; 3], [f32; 3]) {
+    let b = robust_bounds(splats);
+    let get = |k: &str| -> [f32; 3] { serde_json::from_value(b[k].clone()).unwrap() };
+    (get("min"), get("max"))
+}
+
+trait SplatArray: SplatReceiver + SplatGetter + TsplatArray + SplatStore + 'static {}
+impl<T: SplatReceiver + SplatGetter + TsplatArray + SplatStore + 'static> SplatArray for T {}
+
+/// Upper bound on total splats (leaves + interior nodes) an LoD build creates.
+fn lod_capacity(lod: LodMethod, leaves: usize) -> usize {
+    match lod {
+        LodMethod::Quality => leaves * 2,
+        LodMethod::Quick => leaves + leaves / 2, // measured 1.2-1.41x; Spark reserves 1.5x too
+        LodMethod::None => leaves,
+    }
+}
+
+fn reserve_to<T>(v: &mut Vec<T>, capacity: usize) {
+    v.reserve(capacity.saturating_sub(v.len()));
+}
+
+fn sh_counts(sh_degree: usize) -> [usize; 3] {
+    [
+        if sh_degree >= 1 { 9 } else { 0 },
+        if sh_degree >= 2 { 15 } else { 0 },
+        if sh_degree >= 3 { 21 } else { 0 },
+    ]
+}
+
+struct RawReader<'a>(&'a [u8]);
+impl RawReader<'_> {
+    fn take<const N: usize>(&mut self) -> Result<[u8; N], JsError> {
+        let (head, rest) = self.0.split_at_checked(N).ok_or_else(|| js_err("Raw splat batch is truncated"))?;
+        self.0 = rest;
+        Ok(head.try_into().unwrap())
+    }
+    fn f32(&mut self) -> Result<f32, JsError> { Ok(f32::from_le_bytes(self.take()?)) }
+    fn f16(&mut self) -> Result<half::f16, JsError> { Ok(half::f16::from_bits(u16::from_le_bytes(self.take()?))) }
+    fn vec3(&mut self) -> Result<glam::Vec3, JsError> { Ok(glam::Vec3::new(self.f32()?, self.f32()?, self.f32()?)) }
+    fn f16s<const N: usize>(&mut self) -> Result<[half::f16; N], JsError> {
+        let mut out = [half::f16::ZERO; N];
+        for v in &mut out { *v = self.f16()?; }
+        Ok(out)
+    }
+    fn bytes<const N: usize>(&mut self) -> Result<[u8; N], JsError> { self.take() }
+}
+
+fn put_vec3(out: &mut Vec<u8>, v: glam::Vec3) {
+    for c in v.to_array() { out.extend_from_slice(&c.to_le_bytes()); }
+}
+fn put_f16s(out: &mut Vec<u8>, vs: &[half::f16]) {
+    for v in vs { out.extend_from_slice(&v.to_bits().to_le_bytes()); }
+}
+fn rgb_triples<const N: usize>(flat: [half::f16; N]) -> Vec<[half::f16; 3]> {
+    flat.chunks_exact(3).map(|c| [c[0], c[1], c[2]]).collect()
+}
+
+/// Storage-specific operations: exact raw transfer between converter instances
+/// and up-front reservation for the LoD tree.
+///
+/// Raw transfer: WASM memory never shrinks, so a decoder with a large transient
+/// footprint (SOG: whole zip + unpacked images + per-property arrays) can leave
+/// the heap too fragmented for the LoD build. The page can instead move the
+/// decoded splats into a fresh instance. Records copy each storage type's own
+/// fields bit-for-bit (going through the f32 getters/setters isn't lossless).
+///
+/// LoD reservation: every interior node merges >= 2 children, so N leaves never
+/// need more than 2N - 1 nodes, and bhatt-lod ("quality") reaches exactly that
+/// before pruning; tiny-lod ("quick") stays under ~1.4N. Reserving up front
+/// avoids Vec doubling mid-build, which briefly needs old + 2x new capacity as
+/// one contiguous block and is what runs a 4 GB WASM heap out of memory.
+trait SplatStore: Sized {
+    /// Reserve room for `capacity` splats in total (leaves + LoD interior nodes).
+    fn reserve_lod(&mut self, capacity: usize, max_sh_degree: usize);
+    fn raw_bytes_per_splat(max_sh_degree: usize) -> usize;
+    /// Empty store ready to receive raw records.
+    fn for_raw(max_sh_degree: usize, encoding: Option<spark_lib::decoder::SplatEncoding>) -> Self;
+    fn export_raw(&self, base: usize, count: usize, out: &mut Vec<u8>);
+    fn import_raw(&mut self, count: usize, bytes: &[u8]) -> Result<(), JsError>;
+}
+
+impl SplatStore for GsplatArray {
+    fn reserve_lod(&mut self, cap: usize, max_sh_degree: usize) {
+        reserve_to(&mut self.splats, cap);
+        reserve_to(&mut self.children, cap);
+        if max_sh_degree >= 1 { reserve_to(&mut self.sh1, cap); }
+        if max_sh_degree >= 2 { reserve_to(&mut self.sh2, cap); }
+        if max_sh_degree >= 3 { reserve_to(&mut self.sh3, cap); }
+    }
+
+    fn raw_bytes_per_splat(max_sh_degree: usize) -> usize {
+        let [a, b, c] = sh_counts(max_sh_degree);
+        12 + 2 * (1 + 3 + 3 + 4) + 2 * (a + b + c)
+    }
+
+    fn for_raw(max_sh_degree: usize, _encoding: Option<spark_lib::decoder::SplatEncoding>) -> Self {
+        let mut s = GsplatArray::new();
+        s.max_sh_degree = max_sh_degree;
+        s
+    }
+
+    fn export_raw(&self, base: usize, count: usize, out: &mut Vec<u8>) {
+        for i in base..base + count {
+            let s = &self.splats[i];
+            put_vec3(out, s.center);
+            put_f16s(out, &[s.opacity]);
+            put_f16s(out, &s.rgb);
+            put_f16s(out, &s.ln_scales);
+            put_f16s(out, &s.quaternion);
+            if self.max_sh_degree >= 1 { put_f16s(out, self.sh1[i].0.as_flattened()); }
+            if self.max_sh_degree >= 2 { put_f16s(out, self.sh2[i].0.as_flattened()); }
+            if self.max_sh_degree >= 3 { put_f16s(out, self.sh3[i].0.as_flattened()); }
+        }
+    }
+
+    fn import_raw(&mut self, count: usize, bytes: &[u8]) -> Result<(), JsError> {
+        use spark_lib::gsplat::{Gsplat, GsplatSH1, GsplatSH2, GsplatSH3};
+        let mut r = RawReader(bytes);
+        for _ in 0..count {
+            self.splats.push(Gsplat {
+                center: r.vec3()?,
+                opacity: r.f16()?,
+                rgb: r.f16s()?,
+                ln_scales: r.f16s()?,
+                quaternion: r.f16s()?,
+            });
+            if self.max_sh_degree >= 1 { self.sh1.push(GsplatSH1(rgb_triples(r.f16s::<9>()?).try_into().unwrap())); }
+            if self.max_sh_degree >= 2 { self.sh2.push(GsplatSH2(rgb_triples(r.f16s::<15>()?).try_into().unwrap())); }
+            if self.max_sh_degree >= 3 { self.sh3.push(GsplatSH3(rgb_triples(r.f16s::<21>()?).try_into().unwrap())); }
+        }
+        Ok(())
+    }
+}
+
+impl SplatStore for CsplatArray {
+    fn reserve_lod(&mut self, cap: usize, max_sh_degree: usize) {
+        reserve_to(&mut self.splats, cap);
+        reserve_to(&mut self.children, cap);
+        if max_sh_degree >= 1 { reserve_to(&mut self.sh1, cap); }
+        if max_sh_degree >= 2 { reserve_to(&mut self.sh2, cap); }
+        if max_sh_degree >= 3 { reserve_to(&mut self.sh3, cap); }
+    }
+
+    fn raw_bytes_per_splat(max_sh_degree: usize) -> usize {
+        let [a, b, c] = sh_counts(max_sh_degree);
+        12 + 2 + 3 * 3 + (a + b + c)
+    }
+
+    fn for_raw(max_sh_degree: usize, encoding: Option<spark_lib::decoder::SplatEncoding>) -> Self {
+        let mut s = CsplatArray::new_encoding(encoding);
+        s.max_sh_degree = max_sh_degree;
+        s
+    }
+
+    fn export_raw(&self, base: usize, count: usize, out: &mut Vec<u8>) {
+        for i in base..base + count {
+            let s = &self.splats[i];
+            put_vec3(out, s.center);
+            put_f16s(out, &[s.opacity]);
+            out.extend_from_slice(&s.rgb);
+            out.extend_from_slice(&s.scales);
+            out.extend_from_slice(&s.octrot);
+            if self.max_sh_degree >= 1 { out.extend(self.sh1[i].map(|v| v as u8)); }
+            if self.max_sh_degree >= 2 { out.extend(self.sh2[i].map(|v| v as u8)); }
+            if self.max_sh_degree >= 3 { out.extend(self.sh3[i].map(|v| v as u8)); }
+        }
+    }
+
+    fn import_raw(&mut self, count: usize, bytes: &[u8]) -> Result<(), JsError> {
+        use spark_lib::csplat::Csplat;
+        let mut r = RawReader(bytes);
+        for _ in 0..count {
+            self.splats.push(Csplat {
+                center: r.vec3()?,
+                opacity: r.f16()?,
+                rgb: r.bytes()?,
+                scales: r.bytes()?,
+                octrot: r.bytes()?,
+            });
+            if self.max_sh_degree >= 1 { self.sh1.push(r.bytes::<9>()?.map(|v| v as i8)); }
+            if self.max_sh_degree >= 2 { self.sh2.push(r.bytes::<15>()?.map(|v| v as i8)); }
+            if self.max_sh_degree >= 3 { self.sh3.push(r.bytes::<21>()?.map(|v| v as i8)); }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RawHeader {
+    count: usize,
+    sh_degree: usize,
+    encoding: Option<spark_lib::decoder::SplatEncoding>,
+    file_type: String,
+    description: Map<String, Value>,
+}
 
 struct Pipeline<TS: SplatArray> {
     decoder: Option<MultiDecoder<TS>>,
@@ -154,12 +350,51 @@ impl<TS: SplatArray> Pipeline<TS> {
             "splatCount": splats.len(),
             "shDegree": TsplatArray::max_sh_degree(&splats),
             "hasLod": splats.has_lod_tree(),
+            "rawBytes": splats.len() * TS::raw_bytes_per_splat(TsplatArray::max_sh_degree(&splats)),
         });
         self.description.insert("input_file_type".into(), json!(self.file_type));
         self.description.insert("input_splat_count".into(), json!(splats.len()));
         self.description.insert("input_sh_degree".into(), json!(TsplatArray::max_sh_degree(&splats)));
         self.splats = Some(splats);
         Ok(info)
+    }
+
+    fn raw_header(&mut self) -> Result<RawHeader, JsError> {
+        let splats = self.splats.as_mut().ok_or_else(|| js_err("No decoded splats"))?;
+        Ok(RawHeader {
+            count: splats.num_splats(),
+            sh_degree: SplatGetter::max_sh_degree(splats),
+            encoding: splats.get_encoding(),
+            file_type: self.file_type.clone(),
+            description: self.description.clone(),
+        })
+    }
+
+    fn export_raw(&mut self, base: usize, count: usize) -> Result<Vec<u8>, JsError> {
+        let splats = self.splats.as_ref().ok_or_else(|| js_err("No decoded splats"))?;
+        if base + count > splats.len() {
+            return Err(js_err("Raw export range out of bounds"));
+        }
+        let mut out = Vec::with_capacity(count * TS::raw_bytes_per_splat(TsplatArray::max_sh_degree(splats)));
+        splats.export_raw(base, count, &mut out);
+        Ok(out)
+    }
+
+    /// Start from raw splats exported by another instance instead of a file.
+    /// Storage for the LoD tree (`lod`'s growth bound) is allocated up front,
+    /// while the heap is still empty, so it never has to be copied.
+    fn from_raw(header: RawHeader, lod: LodMethod) -> Result<Self, JsError> {
+        let mut splats = TS::for_raw(header.sh_degree, header.encoding.clone());
+        splats.reserve_lod(lod_capacity(lod, header.count), header.sh_degree);
+        Ok(Self { decoder: None, splats: Some(splats), file_type: header.file_type, description: header.description })
+    }
+
+    fn push_raw(&mut self, base: usize, count: usize, bytes: &[u8]) -> Result<(), JsError> {
+        let splats = self.splats.as_mut().ok_or_else(|| js_err("No raw splat target"))?;
+        if base != splats.len() {
+            return Err(js_err("Raw batches must arrive in order"));
+        }
+        splats.import_raw(count, bytes)
     }
 
     fn process(&mut self, options: &ProcessOptions, log: &dyn Fn(&str)) -> Result<Value, JsError> {
@@ -239,6 +474,8 @@ impl<TS: SplatArray> Pipeline<TS> {
                 desc.insert("unlod".into(), json!(true));
             }
             let leaf_count = splats.len();
+            let sh_degree = TsplatArray::max_sh_degree(splats);
+            splats.reserve_lod(lod_capacity(options.lod, leaf_count), sh_degree);
             match options.lod {
                 LodMethod::Quality => {
                     let base = options.lod_base.unwrap_or(1.75).clamp(1.1, 16.0);
@@ -392,10 +629,42 @@ impl RadConverter {
         dispatch!(self, p => p.push(bytes))
     }
 
-    /// Finish decoding. Returns `{ fileType, splatCount, shDegree, hasLod }`.
+    /// Finish decoding. Returns `{ fileType, splatCount, shDegree, hasLod, rawBytes }`.
     pub fn finish(&mut self) -> Result<JsValue, JsError> {
         let info = dispatch!(self, p => p.finish())?;
         to_js(&info)
+    }
+
+    /// Describe the decoded splats for `fromRaw` in another instance.
+    #[wasm_bindgen(js_name = rawHeader)]
+    pub fn raw_header(&mut self) -> Result<JsValue, JsError> {
+        let header = dispatch!(self, p => p.raw_header())?;
+        to_js(&header)
+    }
+
+    /// Export decoded splats `[base, base + count)` as a raw batch.
+    #[wasm_bindgen(js_name = exportRaw)]
+    pub fn export_raw(&mut self, base: usize, count: usize) -> Result<Vec<u8>, JsError> {
+        dispatch!(self, p => p.export_raw(base, count))
+    }
+
+    /// Create a converter holding splats exported from another instance;
+    /// fill it with `pushRaw`, then continue with `process`.
+    #[wasm_bindgen(js_name = fromRaw)]
+    pub fn from_raw(compact: bool, header: JsValue, lod: JsValue) -> Result<RadConverter, JsError> {
+        let header: RawHeader = serde_wasm_bindgen::from_value(header).map_err(js_err)?;
+        let lod: LodMethod = serde_wasm_bindgen::from_value(lod).map_err(js_err)?;
+        let inner = if compact {
+            Inner::C(Pipeline::from_raw(header, lod)?)
+        } else {
+            Inner::G(Pipeline::from_raw(header, lod)?)
+        };
+        Ok(Self { inner })
+    }
+
+    #[wasm_bindgen(js_name = pushRaw)]
+    pub fn push_raw(&mut self, base: usize, count: usize, bytes: &[u8]) -> Result<(), JsError> {
+        dispatch!(self, p => p.push_raw(base, count, bytes))
     }
 
     /// Clean, crop and build the LoD tree. `log` receives progress strings.
@@ -441,6 +710,91 @@ impl RadConverter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Re-encode any supported input as a standard PLY (for format comparisons):
+    /// RAD_TEST_INPUT=scene.sog RAD_TEST_OUTPUT=scene.ply cargo test --release -- --ignored to_ply
+    #[test]
+    #[ignore]
+    fn to_ply() {
+        let input = std::env::var("RAD_TEST_INPUT").expect("RAD_TEST_INPUT");
+        let output = std::env::var("RAD_TEST_OUTPUT").expect("RAD_TEST_OUTPUT");
+        let bytes = std::fs::read(&input).unwrap();
+        let mut p = Pipeline::new(GsplatArray::new(), &input, None).unwrap_or_else(|_| panic!("new"));
+        p.push(&bytes).unwrap_or_else(|_| panic!("push"));
+        p.finish().unwrap_or_else(|_| panic!("finish"));
+        let splats = p.splats.take().unwrap();
+        let ply = spark_lib::ply::PlyEncoder::new(splats).encode().unwrap();
+        std::fs::write(&output, ply).unwrap();
+    }
+
+    /// Build a large SH0 test scene by tiling copies of a real one:
+    /// RAD_TEST_INPUT=scene.zip RAD_TEST_OUTPUT=big.ply RAD_TEST_COPIES=12 cargo test --release -- --ignored tile_ply
+    #[test]
+    #[ignore]
+    fn tile_ply() {
+        let input = std::env::var("RAD_TEST_INPUT").expect("RAD_TEST_INPUT");
+        let output = std::env::var("RAD_TEST_OUTPUT").expect("RAD_TEST_OUTPUT");
+        let copies: usize = std::env::var("RAD_TEST_COPIES").map(|c| c.parse().unwrap()).unwrap_or(12);
+        let bytes = std::fs::read(&input).unwrap();
+        let mut p = Pipeline::new(GsplatArray::new(), &input, None).unwrap_or_else(|_| panic!("new"));
+        p.push(&bytes).unwrap_or_else(|_| panic!("push"));
+        p.finish().unwrap_or_else(|_| panic!("finish"));
+        let mut src = p.splats.take().unwrap();
+        src.clamp_sh_degree(0);
+        let (min, max) = crate::robust_bounds_vec(&src);
+        let step = (max[0] - min[0]) * 1.1;
+        let mut out = GsplatArray::new();
+        for k in 0..copies {
+            for s in &src.splats {
+                let mut s = s.clone();
+                s.center.x += step * k as f32;
+                out.splats.push(s);
+            }
+        }
+        let ply = spark_lib::ply::PlyEncoder::new(out).encode().unwrap();
+        std::fs::write(&output, ply).unwrap();
+    }
+
+    /// Converting via raw export -> fresh instance -> import must produce the
+    /// same RAD as converting directly:
+    /// RAD_TEST_INPUT=scene.spz cargo test --release -- --ignored raw_roundtrip
+    #[test]
+    #[ignore]
+    fn raw_roundtrip() {
+        fn convert<TS: SplatArray>(mut p: Pipeline<TS>) -> Vec<u8> {
+            let options = ProcessOptions { lod: LodMethod::Quick, ..Default::default() };
+            p.process(&options, &|_| {}).unwrap_or_else(|_| panic!("process"));
+            p.encode(&EncodeOptions::default(), &|_| {}).unwrap_or_else(|_| panic!("encode")).0.remove(0)
+        }
+        fn decode<TS: SplatArray>(splats: TS, input: &str, bytes: &[u8]) -> Pipeline<TS> {
+            let mut p = Pipeline::new(splats, input, None).unwrap_or_else(|_| panic!("new"));
+            p.push(bytes).unwrap_or_else(|_| panic!("push"));
+            p.finish().unwrap_or_else(|_| panic!("finish"));
+            p
+        }
+        fn roundtrip<TS: SplatArray>(mut src: Pipeline<TS>) -> Pipeline<TS> {
+            let header = src.raw_header().unwrap_or_else(|_| panic!("header"));
+            let count = header.count;
+            let mut dst = Pipeline::<TS>::from_raw(header, LodMethod::Quick).unwrap_or_else(|_| panic!("from_raw"));
+            let batch = 100_000;
+            for base in (0..count).step_by(batch) {
+                let n = batch.min(count - base);
+                let raw = src.export_raw(base, n).unwrap_or_else(|_| panic!("export"));
+                dst.push_raw(base, n, &raw).unwrap_or_else(|_| panic!("import"));
+            }
+            dst
+        }
+        let input = std::env::var("RAD_TEST_INPUT").expect("RAD_TEST_INPUT");
+        let bytes = std::fs::read(&input).unwrap();
+
+        let direct = convert(decode(GsplatArray::new(), &input, &bytes));
+        let moved = convert(roundtrip(decode(GsplatArray::new(), &input, &bytes)));
+        assert!(direct == moved, "standard precision: raw roundtrip changed the output");
+
+        let direct = convert(decode(CsplatArray::new(), &input, &bytes));
+        let moved = convert(roundtrip(decode(CsplatArray::new(), &input, &bytes)));
+        assert!(direct == moved, "compact precision: raw roundtrip changed the output");
+    }
 
     /// Native parity check against Spark's build-lod CLI. Run with:
     /// RAD_TEST_INPUT=scene.spz RAD_TEST_OUTPUT=out.rad RAD_TEST_LOD=quick \

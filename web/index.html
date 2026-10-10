@@ -108,6 +108,16 @@
           </select>
         </label>
 
+        <label class="field row">
+          <span>Low-memory mode</span>
+          <select name="repack">
+            <option value="auto">Auto (large or SOG-like inputs)</option>
+            <option value="always">Always</option>
+            <option value="off">Off</option>
+          </select>
+        </label>
+        <p class="hint">Moves decoded splats into fresh memory with the LoD tree pre-allocated before building it. Lets much larger scenes fit in the browser's 4 GB limit, at the cost of a few extra seconds.</p>
+
         <h3>Property encoding</h3>
         <div class="enc-grid">
           <label>Center<select name="enc.center"><option>Auto</option><option>F32</option><option>F16</option><option>F32LeBytes</option><option>F16LeBytes</option></select></label>

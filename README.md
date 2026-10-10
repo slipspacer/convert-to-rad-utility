@@ -92,7 +92,23 @@ install `wasm-bindgen-cli` 0.2.117 if they are missing.
 
 ## Limits
 
-- The browser WASM heap tops out at 4 GB. Scenes up to a few million splats are fine. For larger
-  ones, use **Compact** precision or a lower SH degree, or the native `build-lod` CLI.
+- **Memory: browser WebAssembly is capped at 4 GB.** These results are for a 24M-splat scene with
+  SH degree 0 (Spark's LoD build is the bottleneck):
+
+  | Settings | 24M splats |
+  |---|---|
+  | Compact + Quick | ✅ fits (peak ~3.97 GB, about 2.5 minutes) |
+  | Standard + Quick | ❌ runs out of memory in the final reorder |
+  | Standard + Quality | ❌ finishes merging but runs out of memory while pruning |
+
+  As a rule of thumb, Compact + Quick handles roughly 24M splats. Standard and Quality fit
+  noticeably fewer; the converter warns right after decoding if a scene looks too big. Higher SH
+  degrees need proportionally more memory. For bigger scenes, crop them, or use Spark's native
+  `build-lod` CLI, which has no memory cap.
+- **Large or compressed inputs are moved to fresh memory before the LoD build.** WebAssembly
+  memory never shrinks, and some decoders use a lot of temporary space. Reading a SOG uses about
+  3× the memory of the same scene as a PLY. So after decoding, the converter copies the splats
+  exactly into a new worker, with the whole LoD tree's storage reserved up front. The output is
+  byte-identical either way. This is controlled by **Advanced → Low-memory mode**.
 - The in-page preview only works for single-file output. Chunked headers point to `.radc` files by
   relative name, and those names can't be resolved from in-memory bytes.

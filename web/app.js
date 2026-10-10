@@ -78,6 +78,7 @@ function buildJobSettings(s) {
   if (lodBase !== undefined && !(lodBase >= 1.1 && lodBase <= 16)) throw new Error("LoD base must be between 1.1 and 16");
   return {
     compact: s.precision === "compact",
+    repack: s.repack,
     fileType: s.fileType,
     chunked: s.output === "chunked",
     process: {
@@ -128,6 +129,7 @@ function download(blob, name) {
 
 const STAGE_LABEL = {
   decode: "Reading & decoding",
+  repack: "Moving splats to fresh memory",
   lod: "Building LoD tree",
   chunk: "Ordering LoD chunks",
   encode: "Encoding RAD",
@@ -194,8 +196,8 @@ function setState(job, state) {
 function setProgress(job, stage, progress) {
   const { ui } = job;
   ui.stage.textContent = STAGE_LABEL[stage] ?? stage;
-  // Map stages onto one bar: decode 0–20%, lod 20–85%, encode 85–100%
-  const span = { decode: [0, 0.2], lod: [0.2, 0.85], chunk: [0.85, 0.88], encode: [0.88, 1] }[stage] ?? [0, 1];
+  // Map stages onto one bar: decode 0–20%, repack 20–25%, lod 25–85%, encode 85–100%
+  const span = { decode: [0, 0.2], repack: [0.2, 0.25], lod: [0.25, 0.85], chunk: [0.85, 0.88], encode: [0.88, 1] }[stage] ?? [0, 1];
   if (progress == null) {
     ui.bar.classList.add("indet");
   } else {
@@ -227,36 +229,50 @@ function pump() {
 function runJob(job) {
   return new Promise((resolve) => {
     setState(job, "running");
-    const worker = new Worker(new URL("./worker.js", import.meta.url), { type: "module" });
-    job.worker = worker;
     job.resolve = resolve;
-    const finish = () => { worker.terminate(); job.worker = null; resolve(); };
-    worker.onerror = (e) => {
-      fail(job, e.message || "Worker failed to start (is the page served over http://, not file://?)");
-      finish();
-    };
-    worker.onmessage = ({ data }) => {
-      switch (data.type) {
-        case "stage": setProgress(job, data.stage, data.progress); break;
-        case "log": appendLog(job, data.line); break;
-        case "input": {
-          job.input = data.input;
-          appendLog(job, `Decoded ${data.input.fileType}: ${fmtCount(data.input.splatCount)} splats, SH degree ${data.input.shDegree}${data.input.hasLod ? ", has LoD tree" : ""}`);
-          break;
-        }
-        case "processed": job.processed = data.processed; break;
-        case "warning":
-          appendLog(job, `WARNING: ${data.message}`);
-          job.ui.error.hidden = false;
-          job.ui.error.style.color = "var(--accent)";
-          job.ui.error.textContent = data.message;
-          break;
-        case "done": complete(job, data); finish(); break;
-        case "error": fail(job, data.message); finish(); break;
-      }
-    };
-    worker.postMessage({ file: job.file, settings: { ...job.settings, baseName: baseName(job.file.name) } });
+    const settings = { ...job.settings, baseName: baseName(job.file.name) };
+    startWorker(job, { file: job.file, settings }, resolve);
   });
+}
+
+// Each worker owns one WASM instance. A job may hop to a second, fresh worker
+// after decoding ("repack") so the LoD build starts with an unfragmented heap.
+function startWorker(job, payload, resolve, transfer = []) {
+  const worker = new Worker(new URL("./worker.js", import.meta.url), { type: "module" });
+  job.worker = worker;
+  const finish = () => { worker.terminate(); job.worker = null; resolve(); };
+  worker.onerror = (e) => {
+    fail(job, e.message || "Worker failed to start (is the page served over http://, not file://?)");
+    finish();
+  };
+  worker.onmessage = ({ data }) => {
+    switch (data.type) {
+      case "repack": {
+        // The old instance's memory is released when its worker terminates.
+        worker.terminate();
+        const buffers = data.raw.parts.map((p) => p.buffer);
+        startWorker(job, { raw: data.raw, settings: payload.settings }, resolve, buffers);
+        return;
+      }
+      case "stage": setProgress(job, data.stage, data.progress); break;
+      case "log": appendLog(job, data.line); break;
+      case "input": {
+        job.input = data.input;
+        appendLog(job, `Decoded ${data.input.fileType}: ${fmtCount(data.input.splatCount)} splats, SH degree ${data.input.shDegree}${data.input.hasLod ? ", has LoD tree" : ""}`);
+        break;
+      }
+      case "processed": job.processed = data.processed; break;
+      case "warning":
+        appendLog(job, `WARNING: ${data.message}`);
+        job.ui.error.hidden = false;
+        job.ui.error.style.color = "var(--accent)";
+        job.ui.error.textContent = data.message;
+        break;
+      case "done": complete(job, data); finish(); break;
+      case "error": fail(job, data.message); finish(); break;
+    }
+  };
+  worker.postMessage(payload, transfer);
 }
 
 function fail(job, message) {

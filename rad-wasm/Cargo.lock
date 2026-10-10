@@ -400,6 +400,8 @@ name = "rad-wasm"
 version = "0.1.0"
 dependencies = [
  "console_error_panic_hook",
+ "glam",
+ "half",
  "js-sys",
  "serde",
  "serde-wasm-bindgen",

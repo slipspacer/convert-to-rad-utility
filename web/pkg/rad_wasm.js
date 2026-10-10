@@ -2,6 +2,13 @@
  * Streaming converter: `push()` file bytes, `finish()`, `process()`, `encode()`.
  */
 export class RadConverter {
+    static __wrap(ptr) {
+        ptr = ptr >>> 0;
+        const obj = Object.create(RadConverter.prototype);
+        obj.__wbg_ptr = ptr;
+        RadConverterFinalization.register(obj, obj.__wbg_ptr, obj);
+        return obj;
+    }
     __destroy_into_raw() {
         const ptr = this.__wbg_ptr;
         this.__wbg_ptr = 0;
@@ -28,7 +35,22 @@ export class RadConverter {
         return takeFromExternrefTable0(ret[0]);
     }
     /**
-     * Finish decoding. Returns `{ fileType, splatCount, shDegree, hasLod }`.
+     * Export decoded splats `[base, base + count)` as a raw batch.
+     * @param {number} base
+     * @param {number} count
+     * @returns {Uint8Array}
+     */
+    exportRaw(base, count) {
+        const ret = wasm.radconverter_exportRaw(this.__wbg_ptr, base, count);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v1;
+    }
+    /**
+     * Finish decoding. Returns `{ fileType, splatCount, shDegree, hasLod, rawBytes }`.
      * @returns {any}
      */
     finish() {
@@ -37,6 +59,21 @@ export class RadConverter {
             throw takeFromExternrefTable0(ret[1]);
         }
         return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Create a converter holding splats exported from another instance;
+     * fill it with `pushRaw`, then continue with `process`.
+     * @param {boolean} compact
+     * @param {any} header
+     * @param {any} lod
+     * @returns {RadConverter}
+     */
+    static fromRaw(compact, header, lod) {
+        const ret = wasm.radconverter_fromRaw(compact, header, lod);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return RadConverter.__wrap(ret[0]);
     }
     /**
      * `compact`: use Spark's compact csplat representation instead of the
@@ -83,6 +120,30 @@ export class RadConverter {
         if (ret[1]) {
             throw takeFromExternrefTable0(ret[0]);
         }
+    }
+    /**
+     * @param {number} base
+     * @param {number} count
+     * @param {Uint8Array} bytes
+     */
+    pushRaw(base, count, bytes) {
+        const ptr0 = passArray8ToWasm0(bytes, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.radconverter_pushRaw(this.__wbg_ptr, base, count, ptr0, len0);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * Describe the decoded splats for `fromRaw` in another instance.
+     * @returns {any}
+     */
+    rawHeader() {
+        const ret = wasm.radconverter_rawHeader(this.__wbg_ptr);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
     }
 }
 if (Symbol.dispose) RadConverter.prototype[Symbol.dispose] = RadConverter.prototype.free;
@@ -228,6 +289,16 @@ function __wbg_get_imports() {
             let result;
             try {
                 result = arg0 instanceof ArrayBuffer;
+            } catch (_) {
+                result = false;
+            }
+            const ret = result;
+            return ret;
+        },
+        __wbg_instanceof_Map_a10a2795ef4bfe97: function(arg0) {
+            let result;
+            try {
+                result = arg0 instanceof Map;
             } catch (_) {
                 result = false;
             }
