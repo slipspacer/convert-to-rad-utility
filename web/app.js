@@ -866,6 +866,30 @@ async function getViewer() {
   return viewer;
 }
 
+// 2nd..98th percentile of splat centers per axis from up to 200K evenly spaced
+// splats (LoD tree included), so stray floaters don't throw off the framing.
+function sampleBounds(mesh, THREE) {
+  const src = mesh.packedSplats?.lodSplats ?? mesh.extSplats?.lodSplats ?? mesh.packedSplats ?? mesh.extSplats;
+  const n = src?.numSplats ?? 0;
+  if (!n) throw new Error("The file contains no splats to show");
+  const samples = Math.min(n, 200000);
+  const step = n / samples;
+  const axes = [new Float32Array(samples), new Float32Array(samples), new Float32Array(samples)];
+  for (let k = 0; k < samples; k++) {
+    const c = src.getSplat(Math.floor(k * step)).center;
+    axes[0][k] = c.x;
+    axes[1][k] = c.y;
+    axes[2][k] = c.z;
+  }
+  const lo = [], hi = [];
+  for (const a of axes) {
+    a.sort();
+    lo.push(a[Math.floor(samples * 0.02)]);
+    hi.push(a[Math.min(samples - 1, Math.floor(samples * 0.98))]);
+  }
+  return [new THREE.Vector3(...lo), new THREE.Vector3(...hi)];
+}
+
 async function openPreview(job) {
   const status = $("#viewer-status");
   $("#viewer-title").textContent = job.result.radName;
@@ -891,9 +915,10 @@ async function openPreview(job) {
       min = new v.THREE.Vector3(...b.min);
       max = new v.THREE.Vector3(...b.max);
     } else {
-      const box = mesh.getBoundingBox(true); // native results: bounds from the splats
-      min = box.min;
-      max = box.max;
+      // Native results carry no bounds. SplatMesh.getBoundingBox() doesn't see
+      // splats loaded as an LoD tree (it returns an infinite box, i.e. a black
+      // view), so sample the LoD splats directly.
+      [min, max] = sampleBounds(mesh, v.THREE);
     }
     const center = min.clone().add(max).multiplyScalar(0.5).applyQuaternion(mesh.quaternion);
     const radius = Math.max(1e-3, min.distanceTo(max) / 2);
