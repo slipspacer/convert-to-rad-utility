@@ -120,8 +120,43 @@ With `paged: true`, Spark reads the header, then fetches only the 64K-splat chun
 needs, coarsest first. A rough version appears almost immediately and detail fills in as you move.
 Without `paged`, `new SplatMesh({ url })` downloads the whole file before showing anything.
 
-Multiple `.rad` files can share one scene, each as its own `SplatMesh`. Spark splits one splat
-budget across all of them, and they can be mixed with other formats such as SOG.
+### Scenes with several splat files (including mixed SOG + RAD)
+
+A scene can hold any number of splat files, and formats can be mixed. Each file is its own
+`SplatMesh`, and Spark sorts and blends all the splats together whatever format they came from.
+Combining many RAD files into one world is one of Spark 2's headline features. Its `multi-lod`
+example streams 100 separate `.rad` files, each with `paged: true`, in one scene.
+
+How the formats behave side by side:
+
+- **RAD meshes (with LoD) share one splat budget.** Spark spends a fixed number of splats per
+  frame across *all* LoD meshes, about 2.5M on desktop and fewer on mobile
+  (`SparkRenderer.lodSplatCount` / `lodSplatScale`). Detail goes to whatever is close and in view.
+  Paged RADs also share one streaming pool (`SparkRenderer.maxPagedSplats`).
+- **SOG (or PLY, SPZ…) meshes without LoD render every splat, every frame,** outside that budget.
+  A small SOG prop is fine. A large one costs its full splat count on top of the budget, and
+  that's where frame rates drop.
+- **A SOG can join the shared budget** if you load it with `lod: true`. Spark then builds a Quick
+  LoD tree in the browser at load time (about 1–3 s per million splats):
+  `new SplatMesh({ url: "prop.sog", lod: true })`.
+- **To weight detail per object,** set `lodScale` on a mesh. For example, `2.0` gives it twice the
+  detail and `0.5` half.
+
+```js
+// Large environment pieces: pre-built LoD, streamed
+scene.add(new SplatMesh({ url: "terrain-lod.rad", paged: true }));
+scene.add(new SplatMesh({ url: "town-lod.rad", paged: true }));
+
+// Small prop kept as SOG: rendered in full
+scene.add(new SplatMesh({ url: "statue.sog" }));
+
+// Mid-size SOG brought into the LoD budget at load time
+scene.add(new SplatMesh({ url: "market.sog", lod: true }));
+```
+
+**Recommendation:** convert the large pieces to `.rad` and load them with `paged: true`. Small
+props can stay SOG. This guidance comes from Spark's documentation, source and `multi-lod` example.
+A mixed SOG + RAD scene hasn't yet been tested with this converter's output.
 
 ## Hosting RAD files (server requirements)
 
