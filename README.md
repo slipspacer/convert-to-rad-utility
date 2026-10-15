@@ -137,12 +137,17 @@ checking results:
   `paged: true`, using the same Range requests a production page makes, which makes this a quick
   way to check a host (see the hosting requirements below). Linking to
   `viewer.html?url=https://host/scene-lod.rad` streams that file on open.
-- **Controls:** **Orbit** (drag, right-drag to pan, scroll to zoom) or **Fly** (WASD, E/Q up and
-  down, drag to look, Shift faster, Ctrl slower). **Detail** sets the LoD splat budget from 0.25×
-  to 4× (`SparkRenderer.lodSplatScale`).
-- **Limits:** local files are read whole into the page rather than streamed (that needs a URL), so
-  very large files use a lot of browser memory. Streaming from a URL needs Range support, which
-  `serve.py` doesn't have, so stream from a real host.
+- **Fast opening:** a `.rad` with an LoD tree is shown the way a website streams it. Coarse
+  detail appears first and only the chunks in view are decoded, instead of decoding the whole
+  file before the first frame. That applies to local files (read from memory), URLs, and the
+  converter's **Preview**, which streams native-engine results from the launcher's local server.
+- **Controls:** **Orbit** (drag, right-drag to pan, scroll to zoom) or **Fly** (WASD to move, R/F
+  up and down, Q/E to turn left and right, drag to look, Shift faster, Ctrl slower, `-` / `=`
+  speed). Pressing any of those keys while orbiting switches to Fly. Fly speed scales with the
+  scene: 1× is 5% of the scene's size per second, and the **Speed** slider sets 1/16× to 8×. The converter's Preview has the same controls. **Detail** sets
+  the LoD splat budget from 0.25× to 4× (`SparkRenderer.lodSplatScale`).
+- **Limits:** local files are still read whole into the page's memory (only decoding is on
+  demand), so very large files use a lot of browser memory. For those, stream from a URL.
 
 ### Performance evaluation
 

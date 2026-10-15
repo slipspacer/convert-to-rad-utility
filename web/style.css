@@ -171,6 +171,11 @@ dialog::backdrop { background: rgb(0 0 0 / 0.55); }
 .viewer-bar .btn { background: #2a2a26; border-color: #3a3934; color: #ecebe6; }
 #viewer-canvas { flex: 1; min-height: 0; position: relative; }
 #viewer-canvas canvas { display: block; width: 100%; height: 100%; }
+.viewer-bar .vdetail { color: #9c988e; }
+.viewer-bar .vdetail output { color: #ecebe6; }
+.viewer-bar .seg { background: #2a2a26; }
+.viewer-bar .seg span { color: #9c988e; }
+.viewer-bar .seg input:checked + span { background: #3a3934; color: #ecebe6; }
 .viewer-hint { margin: 0; padding: 6px 12px; font-size: 0.75rem; color: #9c988e; background: #1b1b19; }
 
 /* native hand-off */

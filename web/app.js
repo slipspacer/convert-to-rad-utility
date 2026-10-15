@@ -2,7 +2,7 @@ import {
   native, probeNative, buildLodFlags, nativeBlocker, nativeIgnored, runNativeJob, discardNativeJob,
   detectOS, terminalCommands, oneClickScript, binariesPublished, nativeOutputName,
 } from "./native.js";
-import { createSplatView, meshBounds, worldBox, setFlipped, benchmark } from "./splat-view.js";
+import { createSplatView, meshBounds, worldBox, setFlipped, benchmark, radStreamOptions } from "./splat-view.js";
 import { radReport, reportText } from "./rad-report.js";
 
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -884,17 +884,32 @@ async function openPreview(job) {
   status.textContent = "Loading viewer…";
   dialog.showModal();
   try {
-    viewer ??= { view: await createSplatView($("#viewer-canvas")), mesh: null, box: null, flipped: true };
+    if (!viewer) {
+      viewer = { view: await createSplatView($("#viewer-canvas")), mesh: null, box: null, flipped: true };
+      viewer.view.onModeChange = showPreviewMode;
+    }
     const { view } = viewer;
+    showPreviewMode(view.mode);
+    applyPreviewSpeed();
     if (viewer.mesh) { view.scene.remove(viewer.mesh); viewer.mesh.dispose?.(); viewer.mesh = null; }
     status.textContent = "Loading splats…";
 
-    const bytes = await fileBytes(job.result.files[0]);
-    const mesh = new view.spark.SplatMesh({ fileBytes: bytes.slice(), fileName: job.result.radName });
+    // Files with an LoD tree stream like they would on a website: native
+    // results straight from the local server (Range requests), browser
+    // results from memory. Only files without LoD are decoded in full.
+    const file = job.result.files[0];
+    const stream = job.processed.hasLod
+      ? radStreamOptions(view.spark, file.url ? { url: file.url } : { bytes: file.bytes })
+      : null;
+    const mesh = new view.spark.SplatMesh(
+      stream ?? { fileBytes: await fileBytes(file), fileName: job.result.radName },
+    );
     viewer.mesh = mesh;
     setFlipped(mesh, viewer.flipped);
     view.scene.add(mesh);
     await mesh.initialized;
+    // Streamed meshes only load while frames render, so start before framing.
+    view.start();
 
     // Browser results carry robust bounds from the converter; native results
     // are sampled from the file's own (LoD) splats.
@@ -905,13 +920,51 @@ async function openPreview(job) {
       : await meshBounds(view, mesh);
     if (!viewer.box) throw new Error("The file contains no splats to show");
     view.frame(worldBox(view, mesh, viewer.box));
-    status.textContent = `${fmtCount(job.processed.splatCount)} splats${job.processed.hasLod ? " · LoD active" : ""}`;
-    view.start();
+    status.textContent = `${fmtCount(job.processed.splatCount)} splats${job.processed.hasLod ? ` · LoD${stream ? " · streaming" : ""}` : ""}`;
   } catch (err) {
     status.textContent = `Preview failed: ${err.message ?? err}`;
     console.error(err);
   }
 }
+
+const ORBIT_HINT = "Drag to orbit · right-drag to pan · scroll to zoom · WASD to fly";
+const FLY_HINT = "WASD to move · R/F up/down · Q/E turn · drag to look · Shift faster · Ctrl slower · - / = speed";
+const PREVIEW_SPEED_KEY = "radConverter.previewSpeed";
+
+// Fly speed: the slider is a power of two on top of the default (5% of the
+// scene's size per second), remembered between sessions.
+function applyPreviewSpeed() {
+  const s = $("#viewer-speed");
+  const mult = 2 ** Number(s.value);
+  $("#viewer-speed-out").textContent = `${Number(mult.toFixed(2))}×`;
+  try { localStorage.setItem(PREVIEW_SPEED_KEY, s.value); } catch {}
+  viewer?.view.setFlySpeed(mult);
+}
+try {
+  const saved = localStorage.getItem(PREVIEW_SPEED_KEY);
+  if (saved !== null) $("#viewer-speed").value = saved;
+} catch {}
+$("#viewer-speed").addEventListener("input", applyPreviewSpeed);
+
+function showPreviewMode(mode) {
+  for (const r of document.querySelectorAll("input[name=viewer-mode]")) r.checked = r.value === mode;
+  $("#viewer-hint").textContent = mode === "fly" ? FLY_HINT : ORBIT_HINT;
+}
+for (const r of document.querySelectorAll("input[name=viewer-mode]")) {
+  r.addEventListener("change", () => {
+    if (!viewer) return;
+    viewer.view.setMode(r.value);
+    showPreviewMode(r.value);
+  });
+}
+// "-" / "=" change the fly speed (Spark's FpsMovement ignores these keys).
+window.addEventListener("keydown", (e) => {
+  if (!dialog.open || !viewer || e.target.closest?.("input:not([type=radio]):not([type=range]), textarea")) return;
+  if (e.key !== "-" && e.key !== "=" && e.key !== "+") return;
+  const s = $("#viewer-speed");
+  s.value = Math.min(Number(s.max), Math.max(Number(s.min), Number(s.value) + (e.key === "-" ? -0.5 : 0.5)));
+  applyPreviewSpeed();
+});
 
 $("#viewer-flip").addEventListener("click", () => {
   if (!viewer?.mesh) return;

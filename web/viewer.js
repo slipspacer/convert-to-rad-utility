@@ -1,6 +1,6 @@
 // RAD Viewer: drop local splat files (or stream a .rad from a URL) into one
 // Spark scene, the way a site using Spark would load them.
-import { createSplatView, meshBounds, meshSplatCount, worldBox, setFlipped, benchmark } from "./splat-view.js";
+import { createSplatView, meshBounds, meshSplatCount, worldBox, setFlipped, benchmark, radStreamOptions } from "./splat-view.js";
 import { radReport } from "./rad-report.js";
 
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -22,6 +22,7 @@ let nextId = 1;
 async function getView() {
   if (view) return view;
   view = await createSplatView($("#v-canvas"));
+  view.onModeChange = showMode;
   let frames = 0;
   let last = performance.now();
   view.start(() => {
@@ -138,12 +139,15 @@ async function openFiles(files) {
     const buildLod = !isRad && $("#v-lod").checked;
     setMeta(obj, `Reading ${fmtBytes(file.size)}…`);
     const bytes = new Uint8Array(await file.arrayBuffer());
-    setMeta(obj, buildLod ? "Decoding and building LoD…" : "Decoding…");
     const ext = (file.name.match(/\.([a-z0-9]+)$/i)?.[1] ?? "?").toUpperCase();
     if (isRad) showReport(obj, radReport({ bytes }));
-    await addMesh(obj, { fileBytes: bytes, fileName: file.name, ...(buildLod ? { lod: true } : {}) }, (mesh) => {
-      const lod = mesh.packedSplats?.lodSplats || mesh.extSplats?.lodSplats;
-      return `${ext} · ${fmtCount(obj.splats)} splats · ${fmtBytes(file.size)}${lod ? " · LoD" : " · no LoD (renders every splat)"}`;
+    // A .rad with an LoD tree streams from memory (only the chunks in view
+    // are decoded); anything else is decoded in full.
+    const stream = isRad ? radStreamOptions((await getView()).spark, { bytes }) : null;
+    setMeta(obj, stream ? "Streaming…" : buildLod ? "Decoding and building LoD…" : "Decoding…");
+    await addMesh(obj, stream ?? { fileBytes: bytes, fileName: file.name, ...(buildLod ? { lod: true } : {}) }, (mesh) => {
+      const lod = mesh.paged || mesh.packedSplats?.lodSplats || mesh.extSplats?.lodSplats;
+      return `${ext} · ${fmtCount(obj.splats)} splats · ${fmtBytes(file.size)}${lod ? " · LoD" : " · no LoD (renders every splat)"}${mesh.paged ? " · streaming" : ""}`;
     });
   }
 }
@@ -290,22 +294,25 @@ $("#v-res").addEventListener("change", (e) => {
 $("#v-detail").addEventListener("input", applyDetail);
 $("#v-speed").value = prefs.speed ?? 0;
 $("#v-speed").addEventListener("input", applySpeed);
-// "-" / "=" step the fly speed while flying (Spark's FpsMovement ignores these keys).
+// "-" / "=" step the fly speed (Spark's FpsMovement ignores these keys).
 window.addEventListener("keydown", (e) => {
-  if (view?.mode !== "fly" || e.target.closest?.("input, textarea")) return;
+  if (!view || e.target.closest?.("input:not([type=radio]):not([type=range]), textarea")) return;
   if (e.key !== "-" && e.key !== "=" && e.key !== "+") return;
   const s = $("#v-speed");
   s.value = Math.min(Number(s.max), Math.max(Number(s.min), Number(s.value) + (e.key === "-" ? -0.5 : 0.5)));
   applySpeed();
 });
+function showMode(mode) {
+  for (const r of document.querySelectorAll("input[name=v-mode]")) r.checked = r.value === mode;
+  $("#v-hint").textContent = mode === "fly"
+    ? "WASD to move · R/F up/down · Q/E turn · drag to look · Shift faster · Ctrl slower · - / = speed"
+    : "Drag to orbit · right-drag to pan · scroll to zoom · WASD to fly";
+}
 for (const r of document.querySelectorAll("input[name=v-mode]")) {
   r.addEventListener("change", async () => {
     const v = await getView();
     v.setMode(r.value);
-    $("#v-speed-wrap").hidden = r.value !== "fly";
-    $("#v-hint").textContent = r.value === "fly"
-      ? "WASD to move · E/Q up/down · drag to look · Shift faster · Ctrl slower · - / = speed"
-      : "Drag to orbit · right-drag to pan · scroll to zoom";
+    showMode(r.value);
   });
 }
 $("#v-lod").checked = Boolean(prefs.lod);

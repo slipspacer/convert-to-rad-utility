@@ -51,7 +51,19 @@ export async function createSplatView(host) {
       if (next === mode) return;
       mode = next;
       if (mode === "fly") {
-        fly ??= new spark.SparkControls({ canvas: renderer.domElement });
+        if (!fly) {
+          fly = new spark.SparkControls({ canvas: renderer.domElement });
+          // WASD to move, R/F up and down, Q/E pan (turn) left and right.
+          // Spark's defaults use Q/E for down/up; arrows, PageUp/Down and
+          // Home/End/Insert/Delete keep working.
+          const fps = fly.fpsMovement;
+          delete fps.keycodeMoveMapping.KeyQ;
+          delete fps.keycodeMoveMapping.KeyE;
+          fps.keycodeMoveMapping.KeyR = new THREE.Vector3(0, 1, 0);
+          fps.keycodeMoveMapping.KeyF = new THREE.Vector3(0, -1, 0);
+          fps.keycodeRotateMapping.KeyQ = new THREE.Vector3(-1, 0, 0);
+          fps.keycodeRotateMapping.KeyE = new THREE.Vector3(1, 0, 0);
+        }
         applyFlySpeed();
         fly.lastTime = 0;
         orbit.enabled = false;
@@ -113,8 +125,57 @@ export async function createSplatView(host) {
       controlsEnabled = enabled;
       if (fly) fly.lastTime = 0;
     },
+
+    /** Called with the new mode when a key press switches orbit to fly. */
+    onModeChange: null,
   };
+
+  // W/A/S/D/R/F/Q/E while orbiting switches to fly mode, so the keys always move
+  // the camera. Capture phase on window: Spark's controls listen on document,
+  // so controls created here still see this same key press.
+  window.addEventListener("keydown", (e) => {
+    if (mode !== "orbit" || !controlsEnabled || e.ctrlKey || e.metaKey || e.altKey) return;
+    if (!/^[wasdrfqe]$/i.test(e.key)) return;
+    if (e.target.closest?.("textarea, select, input:not([type=radio]):not([type=checkbox]):not([type=range])")) return;
+    if (!renderer.domElement.getClientRects().length) return; // view not on screen
+    view.setMode("fly");
+    view.onModeChange?.("fly");
+  }, { capture: true });
+
   return view;
+}
+
+/** The JSON header of a .rad file from its first bytes, or null. */
+export function radHeader(bytes) {
+  if (!bytes || bytes.length < 8) return null;
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  if (dv.getUint32(0, true) !== 0x30444152) return null; // "RAD0"
+  const n = dv.getUint32(4, true);
+  if (8 + n > bytes.length) return null;
+  try {
+    return JSON.parse(new TextDecoder().decode(bytes.subarray(8, 8 + n)));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * SplatMesh options that stream a .rad the way a website loads it with
+ * paged: true: only the chunks the camera needs are decoded, coarse detail
+ * first, instead of decoding the whole file before the first frame.
+ * - { url }: fetched with HTTP Range requests.
+ * - { bytes }: read from memory (SplatMesh doesn't pass fileBytes to its
+ *   paged loader, so the PagedSplats is made here).
+ * Returns null when bytes can't be streamed: no LoD tree, or a chunked .rad
+ * whose .radc files aren't in memory.
+ */
+export function radStreamOptions(spark, { bytes, url }) {
+  if (bytes) {
+    const meta = radHeader(bytes);
+    if (!meta?.lodTree || meta.chunks?.some((c) => c.filename)) return null;
+    return { paged: new spark.PagedSplats({ fileBytes: bytes, fileType: spark.SplatFileType.RAD }) };
+  }
+  return { url, paged: true, fileType: spark.SplatFileType.RAD };
 }
 
 const PERCENTILE = 0.02;
